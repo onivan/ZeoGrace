@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QPushButton, QLineEdit, QLabel,
     QFileDialog, QMessageBox, QHeaderView, QSplitter, QDialog,
     QFormLayout, QTextEdit, QDateEdit, QDialogButtonBox, QComboBox,
-    QSpinBox, QCheckBox
+    QSpinBox, QCheckBox, QListWidget, QListWidgetItem
 )
 
 from reportlab.lib.pagesizes import A4
@@ -27,6 +27,27 @@ from reportlab.pdfbase.ttfonts import TTFont
 
 UKRAINIAN_ALPHABET = "абвгґдеєжзиіїйклмнопрстуфхцчшщьюя"
 UKRAINIAN_ORDER = {char: idx for idx, char in enumerate(UKRAINIAN_ALPHABET)}
+
+ALL_COLUMNS = [
+    ("id", "ID"),
+    ("name", "Ім'я"),
+    ("address", "Адреса"),
+    ("Date_of_Birth", "Дата нар."),
+    ("Date_of_Bapt", "Хрещення"),
+    ("Mobile_Phone", "Мобільний"),
+    ("Mobile_Phone_a", "Мобільний 2"),
+    ("Home_phone", "Домашній"),
+    ("Work_phone", "Робочий"),
+    ("gender", "Стать"),
+    ("fam_status", "Сімейний стан"),
+    ("church_status", "Статус у церкві"),
+    ("children", "Діти"),
+    ("email", "Email"),
+    ("send_bd_sms", "SMS"),
+    ("notes", "Примітки")
+]
+
+DEFAULT_VISIBLE_COLUMNS = ["id", "name", "address", "Date_of_Birth", "Date_of_Bapt", "Mobile_Phone", "email"]
 
 
 def ukrainian_sort_key(s: str):
@@ -123,6 +144,71 @@ class NumberedCanvas(canvas.Canvas):
     def draw_page_number(self, page_count):
         self.setFont(self.font_name, 9)
         self.drawRightString(200 * 2.834, 15 * 2.834, f"Сторінка {self._pageNumber} з {page_count}")
+
+
+class ColumnSelectionDialog(QDialog):
+    """Діалогове вікно вибору відображуваних колонок таблиці."""
+    def __init__(self, parent=None, current_visible=None):
+        super().__init__(parent)
+        self.setWindowTitle("Вибір колонок для відображення")
+        self.resize(320, 420)
+        self.current_visible = current_visible or DEFAULT_VISIBLE_COLUMNS
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+
+        self.list_widget = QListWidget()
+        for col_id, col_name in ALL_COLUMNS:
+            item = QListWidgetItem(col_name)
+            item.setData(Qt.ItemDataRole.UserRole, col_id)
+            if col_id in self.current_visible:
+                item.setCheckState(Qt.CheckState.Checked)
+            else:
+                item.setCheckState(Qt.CheckState.Unchecked)
+            self.list_widget.addItem(item)
+
+        layout.addWidget(self.list_widget)
+
+        btns_row = QHBoxLayout()
+        btn_select_all = QPushButton("Вибрати всі")
+        btn_select_all.clicked.connect(self.select_all)
+        btns_row.addWidget(btn_select_all)
+
+        btn_reset_def = QPushButton("За замовчуванням")
+        btn_reset_def.clicked.connect(self.reset_default)
+        btns_row.addWidget(btn_reset_def)
+        layout.addLayout(btns_row)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def select_all(self):
+        for idx in range(self.list_widget.count()):
+            self.list_widget.item(idx).setCheckState(Qt.CheckState.Checked)
+
+    def reset_default(self):
+        for idx in range(self.list_widget.count()):
+            item = self.list_widget.item(idx)
+            col_id = item.data(Qt.ItemDataRole.UserRole)
+            if col_id in DEFAULT_VISIBLE_COLUMNS:
+                item.setCheckState(Qt.CheckState.Checked)
+            else:
+                item.setCheckState(Qt.CheckState.Unchecked)
+
+    def get_selected_columns(self):
+        selected = []
+        for idx in range(self.list_widget.count()):
+            item = self.list_widget.item(idx)
+            if item.checkState() == Qt.CheckState.Checked:
+                selected.append(item.data(Qt.ItemDataRole.UserRole))
+        if not selected:
+            selected = ["id", "name"]
+        return selected
 
 
 class PersonDialog(QDialog):
@@ -330,12 +416,19 @@ class ZeoGraceApp(QMainWindow):
         except (ValueError, TypeError):
             self.selected_person_id = None
 
+        saved_cols = self.settings.value("visible_columns", None)
+        if isinstance(saved_cols, list) and saved_cols:
+            self.visible_columns = saved_cols
+        else:
+            self.visible_columns = list(DEFAULT_VISIBLE_COLUMNS)
+
         self.current_photo_id = None
         self.pdf_font = register_unicode_font()
 
         self.init_db()
         self.backup_database()
         self.init_ui()
+        self.restore_ui_state()
         self.load_people()
 
     # --- База даних і бекап ---
@@ -527,11 +620,38 @@ class ZeoGraceApp(QMainWindow):
         base_name = os.path.basename(self.db_path)
         self.setWindowTitle(f"ZeoGrace (Python Edition) — [{base_name}]")
 
+    def restore_ui_state(self):
+        """Відновлення геометрії вікна, розмірів спліттера та ширини колонок."""
+        geom = self.settings.value("main_window_geometry")
+        if geom:
+            self.restoreGeometry(geom)
+
+        splitter_state = self.settings.value("splitter_state")
+        if splitter_state:
+            self.splitter.restoreState(splitter_state)
+
+        header_state = self.settings.value("table_header_state")
+        if header_state:
+            self.table.horizontalHeader().restoreState(header_state)
+
+        vheader_state = self.settings.value("table_vheader_state")
+        if vheader_state:
+            self.table.verticalHeader().restoreState(vheader_state)
+
+        self.apply_column_visibility()
+
     def closeEvent(self, event):
-        """Збереження налаштувань при закритті додатку."""
+        """Збереження налаштувань, геометрії, спліттера та таблиці при закритті додатку."""
         self.settings.setValue("last_db_path", self.db_path)
         if self.selected_person_id is not None:
             self.settings.setValue("last_selected_person_id", self.selected_person_id)
+
+        self.settings.setValue("main_window_geometry", self.saveGeometry())
+        self.settings.setValue("splitter_state", self.splitter.saveState())
+        self.settings.setValue("table_header_state", self.table.horizontalHeader().saveState())
+        self.settings.setValue("table_vheader_state", self.table.verticalHeader().saveState())
+        self.settings.setValue("visible_columns", self.visible_columns)
+
         super().closeEvent(event)
 
     # --- Інтерфейс користувача ---
@@ -584,6 +704,12 @@ class ZeoGraceApp(QMainWindow):
         act_delete.triggered.connect(self.delete_person)
         person_menu.addAction(act_delete)
 
+        # Меню вигляду
+        view_menu = menu_bar.addMenu("&Вигляд")
+        act_columns = QAction("Налаштувати &колонки...", self)
+        act_columns.triggered.connect(self.select_columns)
+        view_menu.addAction(act_columns)
+
         # Центральний віджет
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
@@ -609,6 +735,10 @@ class ZeoGraceApp(QMainWindow):
         btn_reset.clicked.connect(self.reset_filter)
         top_bar.addWidget(btn_reset)
 
+        btn_cols = QPushButton("Колонки...")
+        btn_cols.clicked.connect(self.select_columns)
+        top_bar.addWidget(btn_cols)
+
         btn_export = QPushButton("Експорт PDF")
         btn_export.clicked.connect(self.export_to_pdf)
         top_bar.addWidget(btn_export)
@@ -633,19 +763,22 @@ class ZeoGraceApp(QMainWindow):
         main_layout.addLayout(crud_bar)
 
         # Основна робоча область зі спліттером
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
 
         # Таблиця парафіян
         self.table = QTableWidget()
-        self.table.setColumnCount(7)
-        self.table.setHorizontalHeaderLabels(["ID", "Ім'я", "Адреса", "Дата нар.", "Хрещення", "Мобільний", "Email"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setColumnCount(len(ALL_COLUMNS))
+        self.table.setHorizontalHeaderLabels([col[1] for col in ALL_COLUMNS])
+
+        # Дозволяємо користувачу вільно регулювати розміри колонок та рядків
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.itemSelectionChanged.connect(self.on_person_selected)
         self.table.itemDoubleClicked.connect(lambda: self.edit_person())
-        splitter.addWidget(self.table)
+        self.splitter.addWidget(self.table)
 
         # Права панель для фотографії
         photo_panel = QWidget()
@@ -670,14 +803,30 @@ class ZeoGraceApp(QMainWindow):
         photo_layout.addWidget(btn_del_photo)
 
         photo_layout.addStretch()
-        splitter.addWidget(photo_panel)
+        self.splitter.addWidget(photo_panel)
 
-        splitter.setSizes([800, 350])
-        main_layout.addWidget(splitter)
+        self.splitter.setSizes([800, 350])
+        main_layout.addWidget(self.splitter)
 
         # Статус-бар
         self.status_label = QLabel("Готово")
         self.statusBar().addWidget(self.status_label)
+
+    # --- Налаштування колонок ---
+
+    def apply_column_visibility(self):
+        """Встановлює видимість колонок згідно з вибором користувача."""
+        for col_idx, (col_id, _) in enumerate(ALL_COLUMNS):
+            is_visible = col_id in self.visible_columns
+            self.table.setColumnHidden(col_idx, not is_visible)
+
+    def select_columns(self):
+        """Відкриває діалог вибору колонок."""
+        dlg = ColumnSelectionDialog(self, current_visible=self.visible_columns)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.visible_columns = dlg.get_selected_columns()
+            self.settings.setValue("visible_columns", self.visible_columns)
+            self.apply_column_visibility()
 
     # --- Логіка CRUD для people ---
 
@@ -687,7 +836,32 @@ class ZeoGraceApp(QMainWindow):
 
         self.table.blockSignals(True)
         self.table.setRowCount(0)
-        sql = "SELECT id, name, address, Date_of_Birth, Date_of_Bapt, Mobile_Phone, email FROM people"
+
+        # Завантажуємо довідники для відображення статусів
+        gender_map = {}
+        fam_map = {}
+        church_map = {}
+        with get_db_connection(self.db_path) as conn:
+            cur = conn.cursor()
+            try:
+                cur.execute("SELECT id, list_name FROM list_gender")
+                gender_map = dict(cur.fetchall())
+            except Exception:
+                pass
+            try:
+                cur.execute("SELECT id, list_name FROM list_family_status")
+                fam_map = dict(cur.fetchall())
+            except Exception:
+                pass
+            try:
+                cur.execute("SELECT id, list_name FROM list_church_status")
+                church_map = dict(cur.fetchall())
+            except Exception:
+                pass
+
+        col_keys = [c[0] for c in ALL_COLUMNS]
+        cols_sql = ", ".join(col_keys)
+        sql = f"SELECT {cols_sql} FROM people"
         sql_params = []
 
         search_text = self.search_edit.text().strip()
@@ -723,13 +897,24 @@ class ZeoGraceApp(QMainWindow):
             if target_person_id is not None and p_id == target_person_id:
                 target_row = row_idx
 
-            for col_idx, val in enumerate(row):
-                if col_idx == 5:
+            for col_idx, col_name in enumerate(col_keys):
+                val = row[col_idx]
+                if col_name in ("Mobile_Phone", "Mobile_Phone_a", "Home_phone", "Work_phone"):
                     val = format_phone(val)
+                elif col_name == "gender":
+                    val = gender_map.get(val, "") if val else ""
+                elif col_name == "fam_status":
+                    val = fam_map.get(val, "") if val else ""
+                elif col_name == "church_status":
+                    val = church_map.get(val, "") if val else ""
+                elif col_name == "send_bd_sms":
+                    val = "Так" if val else "Ні"
+
                 item = QTableWidgetItem(str(val) if val is not None else "")
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(row_idx, col_idx, item)
 
+        self.apply_column_visibility()
         self.table.blockSignals(False)
 
         if target_row is not None and target_row < self.table.rowCount():
@@ -1001,18 +1186,15 @@ class ZeoGraceApp(QMainWindow):
 
         elements.append(Paragraph("Звіт списку громади", title_style))
 
-        headers = ["Фото", "Ім'я", "Адреса", "Дата нар.", "Мобільний", "Email"]
+        # Експортуємо видимі користувачем колонки
+        visible_cols_meta = [col for col in ALL_COLUMNS if col[0] in self.visible_columns and col[0] != "id"]
+        headers = ["Фото"] + [col[1] for col in visible_cols_meta]
         table_data = [[Paragraph(h, header_style) for h in headers]]
 
         with get_db_connection(self.db_path) as conn:
             cur = conn.cursor()
             for row_idx in range(self.table.rowCount()):
                 p_id = int(self.table.item(row_idx, 0).text())
-                name = self.table.item(row_idx, 1).text()
-                address = self.table.item(row_idx, 2).text()
-                dob = self.table.item(row_idx, 3).text()
-                phone = self.table.item(row_idx, 5).text()
-                email = self.table.item(row_idx, 6).text()
 
                 cur.execute("SELECT photo FROM photos WHERE people_id = ? ORDER BY photo_id DESC LIMIT 1", (p_id,))
                 photo_row = cur.fetchone()
@@ -1022,16 +1204,21 @@ class ZeoGraceApp(QMainWindow):
                     img_stream = io.BytesIO(photo_row[0])
                     img_flowable = RLImage(img_stream, width=35, height=45)
 
-                table_data.append([
-                    img_flowable,
-                    Paragraph(name, body_style),
-                    Paragraph(address, body_style),
-                    Paragraph(dob, body_style),
-                    Paragraph(phone, body_style),
-                    Paragraph(email, body_style)
-                ])
+                row_cells = [img_flowable]
+                for col_id, _ in visible_cols_meta:
+                    col_index = [c[0] for c in ALL_COLUMNS].index(col_id)
+                    val = self.table.item(row_idx, col_index).text() if self.table.item(row_idx, col_index) else ""
+                    row_cells.append(Paragraph(val, body_style))
 
-        col_widths = [45, 125, 135, 60, 85, 85]
+                table_data.append(row_cells)
+
+        total_width = 535
+        photo_width = 40
+        remain_width = total_width - photo_width
+        num_cols = len(visible_cols_meta)
+        other_widths = [remain_width / num_cols] * num_cols if num_cols > 0 else []
+        col_widths = [photo_width] + other_widths
+
         t = Table(table_data, colWidths=col_widths, repeatRows=1)
         t.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#334155")),
