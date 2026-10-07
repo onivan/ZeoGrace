@@ -6,7 +6,7 @@ import sys
 from datetime import datetime
 from PIL import Image
 
-from PyQt6.QtCore import Qt, QDate
+from PyQt6.QtCore import Qt, QDate, QSettings
 from PyQt6.QtGui import QPixmap, QAction
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -277,13 +277,24 @@ class PersonDialog(QDialog):
 class ZeoGraceApp(QMainWindow):
     def __init__(self, db_path=None):
         super().__init__()
+        self.settings = QSettings("ZeoGrace", "ZeoGraceApp")
+
         if db_path is None:
-            base_dir = os.path.dirname(os.path.abspath(__file__))
-            self.db_path = os.path.join(base_dir, "zeograce.db")
+            saved_db = self.settings.value("last_db_path", type=str)
+            if saved_db and os.path.exists(saved_db):
+                self.db_path = saved_db
+            else:
+                base_dir = os.path.dirname(os.path.abspath(__file__))
+                self.db_path = os.path.join(base_dir, "zeograce.db")
         else:
             self.db_path = db_path
 
-        self.selected_person_id = None
+        saved_person_id = self.settings.value("last_selected_person_id", None)
+        try:
+            self.selected_person_id = int(saved_person_id) if saved_person_id is not None else None
+        except (ValueError, TypeError):
+            self.selected_person_id = None
+
         self.current_photo_id = None
         self.pdf_font = register_unicode_font()
 
@@ -466,6 +477,7 @@ class ZeoGraceApp(QMainWindow):
             return
 
         self.db_path = file_path
+        self.settings.setValue("last_db_path", self.db_path)
         self.init_db()
         self.backup_database()
         self.selected_person_id = None
@@ -479,6 +491,13 @@ class ZeoGraceApp(QMainWindow):
     def update_window_title(self):
         base_name = os.path.basename(self.db_path)
         self.setWindowTitle(f"ZeoGrace (Python Edition) — [{base_name}]")
+
+    def closeEvent(self, event):
+        """Збереження налаштувань при закритті додатку."""
+        self.settings.setValue("last_db_path", self.db_path)
+        if self.selected_person_id is not None:
+            self.settings.setValue("last_selected_person_id", self.selected_person_id)
+        super().closeEvent(event)
 
     # --- Інтерфейс користувача ---
 
@@ -629,6 +648,9 @@ class ZeoGraceApp(QMainWindow):
 
     def load_people(self, *args, query_filter=None, params=None):
         """Завантаження та фільтрація списку людей."""
+        target_person_id = self.selected_person_id
+
+        self.table.blockSignals(True)
         self.table.setRowCount(0)
         sql = "SELECT id, name, address, Date_of_Birth, Date_of_Bapt, Mobile_Phone, email FROM people"
         sql_params = []
@@ -657,13 +679,34 @@ class ZeoGraceApp(QMainWindow):
             rows = cur.fetchall()
 
         self.table.setRowCount(len(rows))
+        target_row = None
+
         for row_idx, row in enumerate(rows):
+            p_id = row[0]
+            if target_person_id is not None and p_id == target_person_id:
+                target_row = row_idx
+
             for col_idx, val in enumerate(row):
                 if col_idx == 5:
                     val = format_phone(val)
                 item = QTableWidgetItem(str(val) if val is not None else "")
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(row_idx, col_idx, item)
+
+        self.table.blockSignals(False)
+
+        if target_row is not None and target_row < self.table.rowCount():
+            self.table.selectRow(target_row)
+            item = self.table.item(target_row, 0)
+            if item:
+                self.table.scrollToItem(item, QTableWidget.ScrollHint.EnsureVisible)
+        elif self.table.rowCount() > 0:
+            self.table.selectRow(0)
+        else:
+            self.selected_person_id = None
+            self.current_photo_id = None
+            self.photo_label.clear()
+            self.photo_label.setText("Немає фото")
 
         self.status_label.setText(f"БД: {os.path.basename(self.db_path)} | Записів знайдено: {len(rows)}")
 
@@ -690,11 +733,8 @@ class ZeoGraceApp(QMainWindow):
                 conn.commit()
                 new_id = cur.lastrowid
 
+            self.selected_person_id = new_id
             self.load_people()
-            for r in range(self.table.rowCount()):
-                if self.table.item(r, 0).text() == str(new_id):
-                    self.table.selectRow(r)
-                    break
 
     def edit_person(self):
         """Редагування вибраного запису (Update)."""
@@ -732,12 +772,7 @@ class ZeoGraceApp(QMainWindow):
                 ))
                 conn.commit()
 
-            curr_id = self.selected_person_id
             self.load_people()
-            for r in range(self.table.rowCount()):
-                if self.table.item(r, 0).text() == str(curr_id):
-                    self.table.selectRow(r)
-                    break
 
     def delete_person(self):
         """Видалення вибраного запису (Delete)."""
@@ -767,6 +802,7 @@ class ZeoGraceApp(QMainWindow):
 
             self.selected_person_id = None
             self.current_photo_id = None
+            self.settings.remove("last_selected_person_id")
             self.photo_label.clear()
             self.photo_label.setText("Немає фото")
             self.load_people()
@@ -790,6 +826,7 @@ class ZeoGraceApp(QMainWindow):
             return
 
         self.selected_person_id = int(self.table.item(selected[0].row(), 0).text())
+        self.settings.setValue("last_selected_person_id", self.selected_person_id)
         self.display_photo(self.selected_person_id)
 
     # --- Робота із зображеннями (CRUD для photos) ---
