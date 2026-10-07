@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QMessageBox, QHeaderView, QSplitter, QDialog,
     QFormLayout, QTextEdit, QDateEdit, QDialogButtonBox, QComboBox,
     QSpinBox, QCheckBox, QListWidget, QListWidgetItem, QGroupBox,
-    QGridLayout, QFrame
+    QGridLayout, QFrame, QRadioButton, QButtonGroup
 )
 
 from reportlab.lib.pagesizes import A4
@@ -50,6 +50,74 @@ ALL_COLUMNS = [
 ]
 
 DEFAULT_VISIBLE_COLUMNS = ["id", "name", "address", "Date_of_Birth", "Date_of_Bapt", "Mobile_Phone", "email"]
+
+PDF_STYLES = {
+    "slate": {
+        "name": "Класичний строгий (Slate)",
+        "desc": "Стриманий темно-сірий дизайн, універсальний для офіційних документів.",
+        "header_bg": colors.HexColor("#334155"),
+        "header_text": colors.white,
+        "row_bg1": colors.white,
+        "row_bg2": colors.HexColor("#F8FAFC"),
+        "grid_color": colors.HexColor("#CBD5E1"),
+        "title_color": colors.HexColor("#1E293B"),
+        "filter_box_bg": colors.HexColor("#F1F5F9"),
+        "filter_box_border": colors.HexColor("#CBD5E1"),
+        "filter_text_color": colors.HexColor("#475569")
+    },
+    "modern_blue": {
+        "name": "Сучасний синій (Modern Blue)",
+        "desc": "Контрастний синій стиль із насиченою шапкою та приємним відтінком смуг.",
+        "header_bg": colors.HexColor("#1E40AF"),
+        "header_text": colors.white,
+        "row_bg1": colors.white,
+        "row_bg2": colors.HexColor("#EFF6FF"),
+        "grid_color": colors.HexColor("#BFDBFE"),
+        "title_color": colors.HexColor("#1E3A8A"),
+        "filter_box_bg": colors.HexColor("#DBEAFE"),
+        "filter_box_border": colors.HexColor("#93C5FD"),
+        "filter_text_color": colors.HexColor("#1E3A8A")
+    },
+    "warm_amber": {
+        "name": "Теплий бурштиновий (Warm Amber)",
+        "desc": "М'яка тепла колірна гама для дружніх та сімейних звітів громади.",
+        "header_bg": colors.HexColor("#78350F"),
+        "header_text": colors.white,
+        "row_bg1": colors.white,
+        "row_bg2": colors.HexColor("#FEF3C7"),
+        "grid_color": colors.HexColor("#FDE68A"),
+        "title_color": colors.HexColor("#78350F"),
+        "filter_box_bg": colors.HexColor("#FFFBEB"),
+        "filter_box_border": colors.HexColor("#FCD34D"),
+        "filter_text_color": colors.HexColor("#92400E")
+    },
+    "emerald": {
+        "name": "Елегантний смарагдовий (Emerald)",
+        "desc": "Гармонійний темно-зелений стиль зі свіжим світлим чергуванням рядків.",
+        "header_bg": colors.HexColor("#065F46"),
+        "header_text": colors.white,
+        "row_bg1": colors.white,
+        "row_bg2": colors.HexColor("#ECFDF5"),
+        "grid_color": colors.HexColor("#A7F3D0"),
+        "title_color": colors.HexColor("#064E3B"),
+        "filter_box_bg": colors.HexColor("#D1FAE5"),
+        "filter_box_border": colors.HexColor("#6EE7B7"),
+        "filter_text_color": colors.HexColor("#065F46")
+    },
+    "minimal": {
+        "name": "Мінімалістичний чистий (Економний друк)",
+        "desc": "Світла шапка, тонкі лінії та мінімум заливки для економії тонера й паперу.",
+        "header_bg": colors.HexColor("#E2E8F0"),
+        "header_text": colors.HexColor("#0F172A"),
+        "row_bg1": colors.white,
+        "row_bg2": colors.HexColor("#F8FAFC"),
+        "grid_color": colors.HexColor("#94A3B8"),
+        "title_color": colors.HexColor("#0F172A"),
+        "filter_box_bg": colors.white,
+        "filter_box_border": colors.HexColor("#94A3B8"),
+        "filter_text_color": colors.HexColor("#334155")
+    }
+}
 
 
 def ukrainian_sort_key(s: str):
@@ -211,6 +279,63 @@ class ColumnSelectionDialog(QDialog):
         if not selected:
             selected = ["id", "name"]
         return selected
+
+
+class PdfExportStyleDialog(QDialog):
+    """Діалогове вікно вибору стилю для експорту звіту в PDF."""
+    def __init__(self, parent=None, current_style="slate"):
+        super().__init__(parent)
+        self.setWindowTitle("Вибір стилю експорту в PDF")
+        self.resize(440, 320)
+        self.selected_style_key = current_style if current_style in PDF_STYLES else "slate"
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+
+        lbl_header = QLabel("<b>Оберіть оформлення для створюваного PDF-звіту:</b>")
+        layout.addWidget(lbl_header)
+
+        self.btn_group = QButtonGroup(self)
+        self.radio_buttons = {}
+
+        for key, style_info in PDF_STYLES.items():
+            box = QFrame()
+            box.setFrameShape(QFrame.Shape.StyledPanel)
+            box.setStyleSheet("background-color: #FAFAFA; border: 1px solid #E2E8F0; border-radius: 6px; padding: 4px;")
+            box_lay = QVBoxLayout(box)
+            box_lay.setContentsMargins(6, 4, 6, 4)
+            box_lay.setSpacing(2)
+
+            rb = QRadioButton(f"<b>{style_info['name']}</b>")
+            if key == self.selected_style_key:
+                rb.setChecked(True)
+            self.btn_group.addButton(rb)
+            self.radio_buttons[key] = rb
+
+            desc_label = QLabel(f"<span style='color: #64748B; font-size: 11px;'>{style_info['desc']}</span>")
+            desc_label.setWordWrap(True)
+
+            box_lay.addWidget(rb)
+            box_lay.addWidget(desc_label)
+            layout.addWidget(box)
+
+        layout.addStretch()
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Продовжити")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Скасувати")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def get_selected_style(self):
+        for key, rb in self.radio_buttons.items():
+            if rb.isChecked():
+                return key
+        return "slate"
 
 
 class ModalStatusFilterDialog(QDialog):
@@ -652,6 +777,7 @@ class ZeoGraceApp(QMainWindow):
         else:
             self.status_filter_state = {}
 
+        self.last_pdf_style = self.settings.value("last_pdf_export_style", "slate", type=str)
         self.bd_this_week_active = False
         self.current_photo_id = None
         self.pdf_font = register_unicode_font()
@@ -883,6 +1009,7 @@ class ZeoGraceApp(QMainWindow):
         self.settings.setValue("table_vheader_state", self.table.verticalHeader().saveState())
         self.settings.setValue("visible_columns", self.visible_columns)
         self.settings.setValue("status_filter_state", json.dumps(self.status_filter_state))
+        self.settings.setValue("last_pdf_export_style", self.last_pdf_style)
 
         super().closeEvent(event)
 
@@ -1000,7 +1127,6 @@ class ZeoGraceApp(QMainWindow):
         self.filter_info_label.setWordWrap(True)
         self.filter_info_label.setStyleSheet("border: none; background: transparent; font-size: 11px;")
         filter_box_layout.addWidget(self.filter_info_label, 1)
-        # Задаємо висоту панелі, що відповідає стандартній висоті кнопки разом із відступами
         filter_box.setFixedHeight(34)
 
         main_layout.addWidget(filter_box)
@@ -1523,6 +1649,16 @@ class ZeoGraceApp(QMainWindow):
     # --- Прямий експорт у PDF (ReportLab) ---
 
     def export_to_pdf(self):
+        style_dlg = PdfExportStyleDialog(self, current_style=self.last_pdf_style)
+        if style_dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        chosen_style_key = style_dlg.get_selected_style()
+        self.last_pdf_style = chosen_style_key
+        self.settings.setValue("last_pdf_export_style", chosen_style_key)
+
+        style_cfg = PDF_STYLES.get(chosen_style_key, PDF_STYLES["slate"])
+
         save_path, _ = QFileDialog.getSaveFileName(self, "Зберегти PDF-звіт", "report.pdf", "PDF файли (*.pdf)")
         if not save_path:
             return
@@ -1545,8 +1681,9 @@ class ZeoGraceApp(QMainWindow):
             fontName=self.pdf_font,
             fontSize=16,
             leading=20,
-            spaceAfter=14,
-            alignment=1
+            spaceAfter=12,
+            alignment=1,
+            textColor=style_cfg["title_color"]
         )
         body_style = ParagraphStyle(
             name="ReportCell",
@@ -1558,10 +1695,11 @@ class ZeoGraceApp(QMainWindow):
         header_style = ParagraphStyle(
             name="ReportHeaderCell",
             parent=body_style,
-            textColor=colors.white
+            textColor=style_cfg["header_text"]
         )
 
         elements.append(Paragraph("Звіт списку громади", title_style))
+
         # Отримуємо та додаємо поточні активні фільтри, якщо вони є
         filter_descs = self._get_filter_descriptions()
         if filter_descs:
@@ -1570,12 +1708,21 @@ class ZeoGraceApp(QMainWindow):
                 name="ReportFilter",
                 parent=styles["Normal"],
                 fontName=self.pdf_font,
-                fontSize=9,
-                leading=12,
-                textColor=colors.HexColor("#475569"),
-                spaceAfter=10
+                fontSize=8,
+                leading=11,
+                textColor=style_cfg["filter_text_color"]
             )
-            elements.append(Paragraph(filter_text, filter_style))
+            filter_table = Table([[Paragraph(filter_text, filter_style)]], colWidths=[535])
+            filter_table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), style_cfg["filter_box_bg"]),
+                ("BOX", (0, 0), (-1, -1), 0.5, style_cfg["filter_box_border"]),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ]))
+            elements.append(filter_table)
+            elements.append(Paragraph("<br/>", styles["Normal"]))
 
         # Експортуємо видимі користувачем колонки
         visible_cols_meta = [col for col in ALL_COLUMNS if col[0] in self.visible_columns and col[0] != "id"]
@@ -1612,13 +1759,13 @@ class ZeoGraceApp(QMainWindow):
 
         t = Table(table_data, colWidths=col_widths, repeatRows=1)
         t.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#334155")),
+            ("BACKGROUND", (0, 0), (-1, 0), style_cfg["header_bg"]),
             ("ALIGN", (0, 0), (-1, -1), "LEFT"),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
             ("TOPPADDING", (0, 0), (-1, -1), 4),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+            ("GRID", (0, 0), (-1, -1), 0.5, style_cfg["grid_color"]),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [style_cfg["row_bg1"], style_cfg["row_bg2"]]),
         ]))
 
         elements.append(t)
