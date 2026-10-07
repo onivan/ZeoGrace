@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import shutil
 import sqlite3
@@ -14,7 +15,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QMessageBox, QHeaderView, QSplitter, QDialog,
     QFormLayout, QTextEdit, QDateEdit, QDialogButtonBox, QComboBox,
     QSpinBox, QCheckBox, QListWidget, QListWidgetItem, QGroupBox,
-    QGridLayout
+    QGridLayout, QFrame
 )
 
 from reportlab.lib.pagesizes import A4
@@ -642,7 +643,16 @@ class ZeoGraceApp(QMainWindow):
         else:
             self.visible_columns = list(DEFAULT_VISIBLE_COLUMNS)
 
-        self.status_filter_state = {}
+        saved_filter_json = self.settings.value("status_filter_state", None, type=str)
+        if saved_filter_json:
+            try:
+                self.status_filter_state = json.loads(saved_filter_json)
+            except Exception:
+                self.status_filter_state = {}
+        else:
+            self.status_filter_state = {}
+
+        self.bd_this_week_active = False
         self.current_photo_id = None
         self.pdf_font = register_unicode_font()
 
@@ -827,7 +837,6 @@ class ZeoGraceApp(QMainWindow):
 
         self.db_path = file_path
         self.settings.setValue("last_db_path", self.db_path)
-        self.status_filter_state = {}
         self.init_db()
         self.backup_database()
         self.selected_person_id = None
@@ -873,6 +882,7 @@ class ZeoGraceApp(QMainWindow):
         self.settings.setValue("table_header_state", self.table.horizontalHeader().saveState())
         self.settings.setValue("table_vheader_state", self.table.verticalHeader().saveState())
         self.settings.setValue("visible_columns", self.visible_columns)
+        self.settings.setValue("status_filter_state", json.dumps(self.status_filter_state))
 
         super().closeEvent(event)
 
@@ -954,13 +964,13 @@ class ZeoGraceApp(QMainWindow):
         self.search_edit.textChanged.connect(lambda: self.load_people())
         top_bar.addWidget(self.search_edit)
 
-        btn_filter_status = QPushButton("Фільтр: Статус...")
-        btn_filter_status.clicked.connect(self.open_status_filter)
-        top_bar.addWidget(btn_filter_status)
+        self.btn_filter_status = QPushButton("Фільтр: Статус...")
+        self.btn_filter_status.clicked.connect(self.open_status_filter)
+        top_bar.addWidget(self.btn_filter_status)
 
-        btn_this_week = QPushButton("ДН цього тижня")
-        btn_this_week.clicked.connect(self.filter_bd_this_week)
-        top_bar.addWidget(btn_this_week)
+        self.btn_this_week = QPushButton("ДН цього тижня")
+        self.btn_this_week.clicked.connect(self.filter_bd_this_week)
+        top_bar.addWidget(self.btn_this_week)
 
         btn_reset = QPushButton("Скинути")
         btn_reset.clicked.connect(self.reset_filter)
@@ -975,6 +985,17 @@ class ZeoGraceApp(QMainWindow):
         top_bar.addWidget(btn_export)
 
         main_layout.addLayout(top_bar)
+
+        # Інформаційний блок поточного активного фільтра
+        self.filter_info_label = QLabel()
+        self.filter_info_label.setWordWrap(True)
+        self.filter_info_label.setFrameShape(QFrame.Shape.StyledPanel)
+        self.filter_info_label.setStyleSheet(
+            "background-color: #EFF6FF; border: 1px solid #BFDBFE; "
+            "color: #1E3A8A; padding: 5px 8px; border-radius: 4px; font-size: 11px;"
+        )
+        self.filter_info_label.setVisible(False)
+        main_layout.addWidget(self.filter_info_label)
 
         # Панель дій CRUD над записами
         crud_bar = QHBoxLayout()
@@ -1064,9 +1085,52 @@ class ZeoGraceApp(QMainWindow):
         dlg = ModalStatusFilterDialog(self, db_path=self.db_path, initial_state=self.status_filter_state)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self.status_filter_state = dlg.get_filter_state()
+            self.settings.setValue("status_filter_state", json.dumps(self.status_filter_state))
             self.load_people()
 
     # --- Логіка CRUD для people ---
+
+    def _get_filter_descriptions(self):
+        """Отримує людиночитабельні назви активних фільтрів."""
+        desc_list = []
+        st = self.status_filter_state
+
+        lookup_queries = [
+            ("church_status", "list_church_status", "Статус у церкві"),
+            ("gender", "list_gender", "Стать"),
+            ("family_status", "list_family_status", "Сімейний стан"),
+            ("group_status", "list_group_status", "Роль/статус у групі"),
+            ("event_type", "list_event_type", "Подія")
+        ]
+
+        try:
+            with get_db_connection(self.db_path) as conn:
+                cur = conn.cursor()
+                for key, table_name, title in lookup_queries:
+                    ids = st.get(key, [])
+                    if ids:
+                        placeholders = ",".join("?" * len(ids))
+                        cur.execute(f"SELECT list_name FROM {table_name} WHERE id IN ({placeholders}) ORDER BY list_name ASC", ids)
+                        names = [row[0] for row in cur.fetchall()]
+                        if names:
+                            desc_list.append(f"<b>{title}:</b> {', '.join(names)}")
+        except Exception:
+            pass
+
+        if st.get("group_name"):
+            desc_list.append(f"<b>Група:</b> {st['group_name']}")
+
+        if st.get("enable_dates"):
+            desc_list.append(f"<b>Діапазон дат події:</b> з {st.get('date_from', '')} до {st.get('date_to', '')}")
+
+        if self.bd_this_week_active:
+            desc_list.append("<b>Дні народження:</b> поточний тиждень")
+
+        search_text = self.search_edit.text().strip()
+        if search_text:
+            desc_list.append(f"<b>Пошук:</b> «{search_text}»")
+
+        return desc_list
 
     def load_people(self, *args, query_filter=None, params=None):
         """Завантаження та фільтрація списку людей з українським сортуванням."""
@@ -1109,6 +1173,9 @@ class ZeoGraceApp(QMainWindow):
             conditions.append("(name LIKE ? OR address LIKE ? OR Mobile_Phone LIKE ? OR Home_phone LIKE ? OR Work_phone LIKE ?)")
             p = f"%{search_text}%"
             sql_params.extend([p, p, p, p, p])
+
+        if self.bd_this_week_active:
+            conditions.append("strftime('%W', Date_of_Birth) = strftime('%W', 'now')")
 
         if query_filter:
             conditions.append(query_filter)
@@ -1206,14 +1273,30 @@ class ZeoGraceApp(QMainWindow):
             self.photo_label.clear()
             self.photo_label.setText("Немає фото")
 
-        filter_info = []
-        if self.status_filter_state.get("group_name"):
-            filter_info.append(f"Група: {self.status_filter_state['group_name']}")
-        if any(self.status_filter_state.get(k) for k in ["church_status", "gender", "family_status", "group_status", "event_type"]):
-            filter_info.append("Активний статус-фільтр")
+        # Оновлення опису активних фільтрів
+        filter_descs = self._get_filter_descriptions()
+        has_status_filters = any(
+            st.get(k) for k in ["church_status", "gender", "family_status", "group_status", "group_id", "event_type"]
+        ) or st.get("enable_dates")
 
-        info_str = f" | {', '.join(filter_info)}" if filter_info else ""
-        self.status_label.setText(f"БД: {os.path.basename(self.db_path)} | Записів знайдено: {len(rows)}{info_str}")
+        if has_status_filters:
+            self.btn_filter_status.setStyleSheet("font-weight: bold; background-color: #DBEAFE; color: #1E40AF;")
+        else:
+            self.btn_filter_status.setStyleSheet("")
+
+        if self.bd_this_week_active:
+            self.btn_this_week.setStyleSheet("font-weight: bold; background-color: #FEF3C7; color: #92400E;")
+        else:
+            self.btn_this_week.setStyleSheet("")
+
+        if filter_descs:
+            self.filter_info_label.setText("🔍 <b>Активні фільтри:</b> " + " | ".join(filter_descs))
+            self.filter_info_label.setVisible(True)
+        else:
+            self.filter_info_label.setVisible(False)
+
+        plain_filter_summary = " [Фільтр активний]" if filter_descs else ""
+        self.status_label.setText(f"БД: {os.path.basename(self.db_path)} | Записів знайдено: {len(rows)}{plain_filter_summary}")
 
     def add_person(self):
         """Створення нового запису (Create)."""
@@ -1313,13 +1396,16 @@ class ZeoGraceApp(QMainWindow):
             self.load_people()
 
     def filter_bd_this_week(self):
-        """Фільтр днів народження поточного тижня."""
-        condition = "strftime('%W', Date_of_Birth) = strftime('%W', 'now')"
-        self.load_people(query_filter=condition)
+        """Перемикач фільтра днів народження поточного тижня."""
+        self.bd_this_week_active = not self.bd_this_week_active
+        self.load_people()
 
     def reset_filter(self):
+        """Скидання всіх фільтрів (пошук, дні народження та статусні фільтри)."""
         self.search_edit.clear()
+        self.bd_this_week_active = False
         self.status_filter_state = {}
+        self.settings.remove("status_filter_state")
         self.load_people()
 
     def on_person_selected(self):
