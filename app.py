@@ -544,7 +544,7 @@ class ZeoGraceApp(QMainWindow):
 
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("Пошук за ім'ям, адресою або телефоном...")
-        self.search_edit.textChanged.connect(self.load_people)
+        self.search_edit.textChanged.connect(lambda: self.load_people())
         top_bar.addWidget(self.search_edit)
 
         btn_this_week = QPushButton("ДН цього тижня")
@@ -627,7 +627,7 @@ class ZeoGraceApp(QMainWindow):
 
     # --- Логіка CRUD для people ---
 
-    def load_people(self, query_filter=None, params=None):
+    def load_people(self, *args, query_filter=None, params=None): 
         """Завантаження та фільтрація списку людей."""
         self.table.setRowCount(0)
         sql = "SELECT id, name, address, Date_of_Birth, Date_of_Bapt, Mobile_Phone, email FROM people"
