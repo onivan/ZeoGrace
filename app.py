@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Image as RLImage
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Image as RLImage, Spacer, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.pdfgen import canvas
 from reportlab.pdfbase import pdfmetrics
@@ -61,6 +61,8 @@ PDF_STYLES = {
         "row_bg2": colors.HexColor("#F8FAFC"),
         "grid_color": colors.HexColor("#CBD5E1"),
         "title_color": colors.HexColor("#1E293B"),
+        "card_bg": colors.HexColor("#F8FAFC"),
+        "card_border": colors.HexColor("#CBD5E1"),
         "filter_box_bg": colors.HexColor("#F1F5F9"),
         "filter_box_border": colors.HexColor("#CBD5E1"),
         "filter_text_color": colors.HexColor("#475569")
@@ -74,6 +76,8 @@ PDF_STYLES = {
         "row_bg2": colors.HexColor("#EFF6FF"),
         "grid_color": colors.HexColor("#BFDBFE"),
         "title_color": colors.HexColor("#1E3A8A"),
+        "card_bg": colors.HexColor("#F0F7FF"),
+        "card_border": colors.HexColor("#BFDBFE"),
         "filter_box_bg": colors.HexColor("#DBEAFE"),
         "filter_box_border": colors.HexColor("#93C5FD"),
         "filter_text_color": colors.HexColor("#1E3A8A")
@@ -87,6 +91,8 @@ PDF_STYLES = {
         "row_bg2": colors.HexColor("#FEF3C7"),
         "grid_color": colors.HexColor("#FDE68A"),
         "title_color": colors.HexColor("#78350F"),
+        "card_bg": colors.HexColor("#FFFDF5"),
+        "card_border": colors.HexColor("#FDE68A"),
         "filter_box_bg": colors.HexColor("#FFFBEB"),
         "filter_box_border": colors.HexColor("#FCD34D"),
         "filter_text_color": colors.HexColor("#92400E")
@@ -100,6 +106,8 @@ PDF_STYLES = {
         "row_bg2": colors.HexColor("#ECFDF5"),
         "grid_color": colors.HexColor("#A7F3D0"),
         "title_color": colors.HexColor("#064E3B"),
+        "card_bg": colors.HexColor("#F4FDF8"),
+        "card_border": colors.HexColor("#A7F3D0"),
         "filter_box_bg": colors.HexColor("#D1FAE5"),
         "filter_box_border": colors.HexColor("#6EE7B7"),
         "filter_text_color": colors.HexColor("#065F46")
@@ -113,9 +121,26 @@ PDF_STYLES = {
         "row_bg2": colors.HexColor("#F8FAFC"),
         "grid_color": colors.HexColor("#94A3B8"),
         "title_color": colors.HexColor("#0F172A"),
+        "card_bg": colors.white,
+        "card_border": colors.HexColor("#CBD5E1"),
         "filter_box_bg": colors.white,
         "filter_box_border": colors.HexColor("#94A3B8"),
         "filter_text_color": colors.HexColor("#334155")
+    }
+}
+
+PDF_LAYOUTS = {
+    "a4_cards": {
+        "name": "А4 (по 2 картки на рядок)",
+        "desc": "Сторінка формату А4. По 2 картки в рядку з великою фотографією висотою 500px та повними відомостями."
+    },
+    "phone": {
+        "name": "Для телефону",
+        "desc": "Розмір сторінки оптимізований під екран смартфона (9:16). По 3 плитки на кожній сторінці, по 1 в рядку."
+    },
+    "compact": {
+        "name": "Компактний",
+        "desc": "Формат А4 без фотографій. Компактна таблиця з повторенням заголовків колонок на кожній сторінці."
     }
 }
 
@@ -193,7 +218,7 @@ def format_phone(phone: str) -> str:
 
 
 class NumberedCanvas(canvas.Canvas):
-    """Канвас із нумерацією сторінок (X із Y)."""
+    """Канвас із динамічною нумерацією сторінок (X із Y)."""
     def __init__(self, *args, **kwargs):
         self.font_name = kwargs.pop("font_name", "Helvetica")
         super().__init__(*args, **kwargs)
@@ -212,8 +237,13 @@ class NumberedCanvas(canvas.Canvas):
         super().save()
 
     def draw_page_number(self, page_count):
-        self.setFont(self.font_name, 9)
-        self.drawRightString(200 * 2.834, 15 * 2.834, f"Сторінка {self._pageNumber} з {page_count}")
+        self.setFont(self.font_name, 8)
+        self.setFillColor(colors.HexColor("#64748B"))
+        margin_right = 20
+        margin_bottom = 12
+        x = self._pagesize[0] - margin_right
+        y = margin_bottom
+        self.drawRightString(x, y, f"Сторінка {self._pageNumber} з {page_count}")
 
 
 class ColumnSelectionDialog(QDialog):
@@ -282,57 +312,69 @@ class ColumnSelectionDialog(QDialog):
 
 
 class PdfExportStyleDialog(QDialog):
-    """Діалогове вікно вибору стилю для експорту звіту в PDF."""
-    def __init__(self, parent=None, current_style="slate"):
+    """Діалогове вікно вибору лейауту та стилю для експорту в PDF."""
+    def __init__(self, parent=None, current_layout="a4_cards", current_style="slate"):
         super().__init__(parent)
-        self.setWindowTitle("Вибір стилю експорту в PDF")
-        self.resize(440, 320)
+        self.setWindowTitle("Параметри експорту в PDF")
+        self.resize(520, 500)
+        self.selected_layout_key = current_layout if current_layout in PDF_LAYOUTS else "a4_cards"
         self.selected_style_key = current_style if current_style in PDF_STYLES else "slate"
         self.init_ui()
 
     def init_ui(self):
         layout = QVBoxLayout(self)
 
-        lbl_header = QLabel("<b>Оберіть оформлення для створюваного PDF-звіту:</b>")
-        layout.addWidget(lbl_header)
+        # 1. Вибір макета (Layout)
+        gb_layout = QGroupBox("1. Оберіть макет (лейаут) сторінки")
+        gb_lay_vbox = QVBoxLayout(gb_layout)
 
-        self.btn_group = QButtonGroup(self)
-        self.radio_buttons = {}
+        self.layout_radios = {}
+        for key, lay_info in PDF_LAYOUTS.items():
+            rb = QRadioButton(f"<b>{lay_info['name']}</b>")
+            if key == self.selected_layout_key:
+                rb.setChecked(True)
+            desc_lbl = QLabel(f"<span style='color: #64748B; font-size: 11px;'>{lay_info['desc']}</span>")
+            desc_lbl.setWordWrap(True)
+            gb_lay_vbox.addWidget(rb)
+            gb_lay_vbox.addWidget(desc_lbl)
+            self.layout_radios[key] = rb
 
+        layout.addWidget(gb_layout)
+
+        # 2. Вибір кольорового стилю
+        gb_style = QGroupBox("2. Оберіть колірну схему")
+        gb_style_vbox = QVBoxLayout(gb_style)
+
+        self.style_radios = {}
         for key, style_info in PDF_STYLES.items():
-            box = QFrame()
-            box.setFrameShape(QFrame.Shape.StyledPanel)
-            box.setStyleSheet("background-color: #FAFAFA; border: 1px solid #E2E8F0; border-radius: 6px; padding: 4px;")
-            box_lay = QVBoxLayout(box)
-            box_lay.setContentsMargins(6, 4, 6, 4)
-            box_lay.setSpacing(2)
-
             rb = QRadioButton(f"<b>{style_info['name']}</b>")
             if key == self.selected_style_key:
                 rb.setChecked(True)
-            self.btn_group.addButton(rb)
-            self.radio_buttons[key] = rb
+            desc_lbl = QLabel(f"<span style='color: #64748B; font-size: 11px;'>{style_info['desc']}</span>")
+            desc_lbl.setWordWrap(True)
+            gb_style_vbox.addWidget(rb)
+            gb_style_vbox.addWidget(desc_lbl)
+            self.style_radios[key] = rb
 
-            desc_label = QLabel(f"<span style='color: #64748B; font-size: 11px;'>{style_info['desc']}</span>")
-            desc_label.setWordWrap(True)
-
-            box_lay.addWidget(rb)
-            box_lay.addWidget(desc_label)
-            layout.addWidget(box)
-
-        layout.addStretch()
+        layout.addWidget(gb_style)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Продовжити")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Експортувати...")
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Скасувати")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+    def get_selected_layout(self):
+        for key, rb in self.layout_radios.items():
+            if rb.isChecked():
+                return key
+        return "a4_cards"
+
     def get_selected_style(self):
-        for key, rb in self.radio_buttons.items():
+        for key, rb in self.style_radios.items():
             if rb.isChecked():
                 return key
         return "slate"
@@ -675,7 +717,7 @@ class PersonDialog(QDialog):
             self.edit_name.setText(self.person_data.get("name", "") or "")
             self.edit_address.setText(self.person_data.get("address", "") or "")
             dob_val = str(self.person_data.get("Date_of_Birth", "") or "")
-            if dob_val and dob_val != "1898":  # Запобігання артефакту 1900-1-1
+            if dob_val and dob_val != "1898":
                 try:
                     qdate = QDate.fromString(dob_val[:10], "yyyy-MM-dd")
                     if qdate.isValid():
@@ -777,6 +819,7 @@ class ZeoGraceApp(QMainWindow):
         else:
             self.status_filter_state = {}
 
+        self.last_pdf_layout = self.settings.value("last_pdf_export_layout", "a4_cards", type=str)
         self.last_pdf_style = self.settings.value("last_pdf_export_style", "slate", type=str)
         self.bd_this_week_active = False
         self.current_photo_id = None
@@ -1009,6 +1052,7 @@ class ZeoGraceApp(QMainWindow):
         self.settings.setValue("table_vheader_state", self.table.verticalHeader().saveState())
         self.settings.setValue("visible_columns", self.visible_columns)
         self.settings.setValue("status_filter_state", json.dumps(self.status_filter_state))
+        self.settings.setValue("last_pdf_export_layout", self.last_pdf_layout)
         self.settings.setValue("last_pdf_export_style", self.last_pdf_style)
 
         super().closeEvent(event)
@@ -1273,7 +1317,6 @@ class ZeoGraceApp(QMainWindow):
         self.table.blockSignals(True)
         self.table.setRowCount(0)
 
-        # Завантажуємо довідники для відображення статусів
         gender_map = {}
         fam_map = {}
         church_map = {}
@@ -1407,7 +1450,6 @@ class ZeoGraceApp(QMainWindow):
             self.photo_label.clear()
             self.photo_label.setText("Немає фото")
 
-        # Оновлення опису активних фільтрів
         filter_descs = self._get_filter_descriptions()
         has_status_filters = any(
             st.get(k) for k in ["church_status", "gender", "family_status", "group_status", "group_id", "event_type"]
@@ -1649,12 +1691,20 @@ class ZeoGraceApp(QMainWindow):
     # --- Прямий експорт у PDF (ReportLab) ---
 
     def export_to_pdf(self):
-        style_dlg = PdfExportStyleDialog(self, current_style=self.last_pdf_style)
+        style_dlg = PdfExportStyleDialog(
+            self,
+            current_layout=self.last_pdf_layout,
+            current_style=self.last_pdf_style
+        )
         if style_dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
+        chosen_layout_key = style_dlg.get_selected_layout()
         chosen_style_key = style_dlg.get_selected_style()
+
+        self.last_pdf_layout = chosen_layout_key
         self.last_pdf_style = chosen_style_key
+        self.settings.setValue("last_pdf_export_layout", chosen_layout_key)
         self.settings.setValue("last_pdf_export_style", chosen_style_key)
 
         style_cfg = PDF_STYLES.get(chosen_style_key, PDF_STYLES["slate"])
@@ -1663,112 +1713,317 @@ class ZeoGraceApp(QMainWindow):
         if not save_path:
             return
 
+        # Завантажуємо повні дані про парафіян із поточної таблиці
+        records = []
+        with get_db_connection(self.db_path) as conn:
+            cur = conn.cursor()
+            for row_idx in range(self.table.rowCount()):
+                p_id = int(self.table.item(row_idx, 0).text())
+                cur.execute("""
+                    SELECT p.id, p.name, p.address, p.Date_of_Birth, p.Date_of_Bapt,
+                           p.Mobile_Phone, p.Mobile_Phone_a, p.Home_phone, p.Work_phone,
+                           p.children,
+                           (SELECT list_name FROM list_church_status WHERE id = p.church_status),
+                           (SELECT list_name FROM list_family_status WHERE id = p.fam_status),
+                           p.email
+                    FROM people p
+                    WHERE p.id = ?
+                """, (p_id,))
+                p_row = cur.fetchone()
+                if not p_row:
+                    continue
+
+                cur.execute("SELECT photo FROM photos WHERE people_id = ? ORDER BY photo_id DESC LIMIT 1", (p_id,))
+                photo_row = cur.fetchone()
+                photo_bytes = photo_row[0] if (photo_row and photo_row[0]) else None
+
+                # Збираємо всі телефони через кому
+                phones = []
+                for ph in [p_row[5], p_row[6], p_row[7], p_row[8]]:
+                    fph = format_phone(ph)
+                    if fph and fph not in phones:
+                        phones.append(fph)
+                phone_str = ", ".join(phones) if phones else "—"
+
+                records.append({
+                    "id": p_row[0],
+                    "name": p_row[1] or "",
+                    "address": p_row[2] or "—",
+                    "dob": p_row[3] or "—",
+                    "bapt": p_row[4] or "—",
+                    "phones": phone_str,
+                    "children": p_row[9] if p_row[9] is not None else 0,
+                    "church_status": p_row[10] or "—",
+                    "fam_status": p_row[11] or "—",
+                    "email": p_row[12] or "",
+                    "photo_bytes": photo_bytes
+                })
+
+        total_records_count = len(records)
+
+        # Формування параметрів сторінки
+        if chosen_layout_key == "phone":
+            # 108mm x 192mm (пропорція 9:16 під телефонний екран)
+            page_size = (108 * 2.834, 192 * 2.834)
+            left_margin = right_margin = 14
+            top_margin = 14
+            bottom_margin = 18
+            doc_width = page_size[0] - (left_margin + right_margin)
+        else:
+            page_size = A4
+            left_margin = right_margin = 25
+            top_margin = 25
+            bottomMargin = 25
+            doc_width = 545
+
         doc = SimpleDocTemplate(
             save_path,
-            pagesize=A4,
-            leftMargin=30,
-            rightMargin=30,
-            topMargin=30,
-            bottomMargin=35
+            pagesize=page_size,
+            leftMargin=left_margin,
+            rightMargin=right_margin,
+            topMargin=top_margin,
+            bottomMargin=bottomMargin if chosen_layout_key != "phone" else bottom_margin
         )
 
         elements = []
         styles = getSampleStyleSheet()
 
+        title_font_size = 14 if chosen_layout_key == "phone" else 16
         title_style = ParagraphStyle(
             name="ReportTitle",
             parent=styles["Heading1"],
             fontName=self.pdf_font,
-            fontSize=16,
-            leading=20,
-            spaceAfter=12,
+            fontSize=title_font_size,
+            leading=title_font_size + 4,
+            spaceAfter=8,
             alignment=1,
             textColor=style_cfg["title_color"]
         )
-        body_style = ParagraphStyle(
-            name="ReportCell",
+
+        # Рядок активних фільтрів + кількість записів
+        filter_descs = self._get_filter_descriptions()
+        filter_parts = []
+        if filter_descs:
+            filter_parts.append("<b>Фільтри:</b> " + " | ".join(filter_descs))
+        filter_parts.append(f"<b>Всього записів:</b> {total_records_count}")
+        filter_full_text = " | ".join(filter_parts)
+
+        filter_style = ParagraphStyle(
+            name="ReportFilter",
             parent=styles["Normal"],
             fontName=self.pdf_font,
-            fontSize=8,
-            leading=10
-        )
-        header_style = ParagraphStyle(
-            name="ReportHeaderCell",
-            parent=body_style,
-            textColor=style_cfg["header_text"]
+            fontSize=7 if chosen_layout_key == "phone" else 8,
+            leading=10,
+            textColor=style_cfg["filter_text_color"]
         )
 
         elements.append(Paragraph("Звіт списку громади", title_style))
+        filter_table = Table([[Paragraph(filter_full_text, filter_style)]], colWidths=[doc_width])
+        filter_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), style_cfg["filter_box_bg"]),
+            ("BOX", (0, 0), (-1, -1), 0.5, style_cfg["filter_box_border"]),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        elements.append(filter_table)
+        elements.append(Spacer(1, 8))
 
-        # Отримуємо та додаємо поточні активні фільтри, якщо вони є
-        filter_descs = self._get_filter_descriptions()
-        if filter_descs:
-            filter_text = "<b>Активні фільтри:</b> " + " | ".join(filter_descs)
-            filter_style = ParagraphStyle(
-                name="ReportFilter",
+        # --- Генерація згідно з обраним лейаутом ---
+
+        if chosen_layout_key == "a4_cards":
+            # Варіант 1 (А4): по 2 картки в рядку, велике фото (висота 500px / 375pt, ширина пропорційна)
+            card_w = (doc_width - 8) / 2
+            photo_h = 500 * 0.75  # ~375 pt (500 px у 72/96 dpi еквіваленті)
+            photo_w = card_w * 0.44
+            info_w = card_w - photo_w - 10
+
+            text_style = ParagraphStyle(
+                name="CardTextA4",
                 parent=styles["Normal"],
                 fontName=self.pdf_font,
                 fontSize=8,
-                leading=11,
-                textColor=style_cfg["filter_text_color"]
+                leading=10.5
             )
-            filter_table = Table([[Paragraph(filter_text, filter_style)]], colWidths=[535])
-            filter_table.setStyle(TableStyle([
-                ("BACKGROUND", (0, 0), (-1, -1), style_cfg["filter_box_bg"]),
-                ("BOX", (0, 0), (-1, -1), 0.5, style_cfg["filter_box_border"]),
-                ("TOPPADDING", (0, 0), (-1, -1), 4),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                ("LEFTPADDING", (0, 0), (-1, -1), 6),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-            ]))
-            elements.append(filter_table)
-            elements.append(Paragraph("<br/>", styles["Normal"]))
+            title_card_style = ParagraphStyle(
+                name="CardTitleA4",
+                parent=styles["Normal"],
+                fontName=self.pdf_font,
+                fontSize=9.5,
+                leading=12,
+                textColor=style_cfg["title_color"]
+            )
 
-        # Експортуємо видимі користувачем колонки
-        visible_cols_meta = [col for col in ALL_COLUMNS if col[0] in self.visible_columns and col[0] != "id"]
-        headers = ["Фото"] + [col[1] for col in visible_cols_meta]
-        table_data = [[Paragraph(h, header_style) for h in headers]]
+            cards = []
+            for idx, rec in enumerate(records, start=1):
+                img_widget = ""
+                if rec["photo_bytes"]:
+                    try:
+                        img_stream = io.BytesIO(rec["photo_bytes"])
+                        img_widget = RLImage(img_stream, width=photo_w, height=photo_h)
+                    except Exception:
+                        img_widget = ""
 
-        with get_db_connection(self.db_path) as conn:
-            cur = conn.cursor()
+                info_lines = [
+                    Paragraph(f"<b>#{idx}. {rec['name']}</b>", title_card_style),
+                    Paragraph(f"<b>Телефони:</b> {rec['phones']}", text_style),
+                    Paragraph(f"<b>Адреса:</b> {rec['address']}", text_style),
+                    Paragraph(f"<b>Дата нар.:</b> {rec['dob']}", text_style),
+                    Paragraph(f"<b>Хрещення:</b> {rec['bapt']}", text_style),
+                    Paragraph(f"<b>Церк. статус:</b> {rec['church_status']}", text_style),
+                    Paragraph(f"<b>Сім. статус:</b> {rec['fam_status']}", text_style),
+                    Paragraph(f"<b>Дітей:</b> {rec['children']}", text_style),
+                ]
+                if rec["email"]:
+                    info_lines.append(Paragraph(f"<b>Email:</b> {rec['email']}", text_style))
+
+                card_table = Table([[img_widget, info_lines]], colWidths=[photo_w, info_w])
+                card_table.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, -1), style_cfg["card_bg"]),
+                    ("BOX", (0, 0), (-1, -1), 0.5, style_cfg["card_border"]),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("ALIGN", (0, 0), (0, 0), "CENTER"),
+                    ("TOPPADDING", (0, 0), (-1, -1), 6),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                ]))
+                cards.append(card_table)
+
+            # Розміщуємо по 2 картки в рядок
+            grid_data = []
+            for i in range(0, len(cards), 2):
+                row_cells = [cards[i]]
+                if i + 1 < len(cards):
+                    row_cells.append(cards[i + 1])
+                else:
+                    row_cells.append("")
+                grid_data.append(row_cells)
+
+            if grid_data:
+                cards_grid = Table(grid_data, colWidths=[card_w, card_w])
+                cards_grid.setStyle(TableStyle([
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 2),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+                ]))
+                elements.append(cards_grid)
+
+        elif chosen_layout_key == "phone":
+            # Варіант 2 (Для телефону): екран телефону, рівно по 3 плитки на сторінці (по 1 в рядку)
+            card_w = doc_width
+            card_photo_w = 68
+            card_photo_h = 92
+            info_w = card_w - card_photo_w - 8
+
+            phone_text_style = ParagraphStyle(
+                name="CardPhoneText",
+                parent=styles["Normal"],
+                fontName=self.pdf_font,
+                fontSize=6.8,
+                leading=8.5
+            )
+            phone_title_style = ParagraphStyle(
+                name="CardPhoneTitle",
+                parent=styles["Normal"],
+                fontName=self.pdf_font,
+                fontSize=8.5,
+                leading=10.5,
+                textColor=style_cfg["title_color"]
+            )
+
+            for idx, rec in enumerate(records, start=1):
+                img_widget = ""
+                if rec["photo_bytes"]:
+                    try:
+                        img_stream = io.BytesIO(rec["photo_bytes"])
+                        img_widget = RLImage(img_stream, width=card_photo_w, height=card_photo_h)
+                    except Exception:
+                        img_widget = ""
+
+                info_lines = [
+                    Paragraph(f"<b>#{idx}. {rec['name']}</b>", phone_title_style),
+                    Paragraph(f"<b>Тел:</b> {rec['phones']}", phone_text_style),
+                    Paragraph(f"<b>Адреса:</b> {rec['address']}", phone_text_style),
+                    Paragraph(f"<b>ДН:</b> {rec['dob']} | <b>Хрещ:</b> {rec['bapt']}", phone_text_style),
+                    Paragraph(f"<b>Статус:</b> {rec['church_status']} | <b>Сім:</b> {rec['fam_status']}", phone_text_style),
+                    Paragraph(f"<b>Дітей:</b> {rec['children']}", phone_text_style),
+                ]
+
+                card_table = Table([[img_widget, info_lines]], colWidths=[card_photo_w, info_w])
+                card_table.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, -1), style_cfg["card_bg"]),
+                    ("BOX", (0, 0), (-1, -1), 0.5, style_cfg["card_border"]),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("ALIGN", (0, 0), (0, 0), "CENTER"),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ]))
+
+                elements.append(card_table)
+                elements.append(Spacer(1, 4))
+
+                # По 3 картки на сторінку
+                if idx % 3 == 0 and idx < len(records):
+                    elements.append(PageBreak())
+
+        else:
+            # Варіант 3 (Компактний): сторінка А4, таблиця БЕЗ фотографій, повторення заголовків на кожній сторінці
+            compact_header_style = ParagraphStyle(
+                name="CompactHeader",
+                parent=styles["Normal"],
+                fontName=self.pdf_font,
+                fontSize=8,
+                leading=10,
+                textColor=style_cfg["header_text"]
+            )
+            compact_cell_style = ParagraphStyle(
+                name="CompactCell",
+                parent=styles["Normal"],
+                fontName=self.pdf_font,
+                fontSize=7.5,
+                leading=9.5
+            )
+
+            # Вибираємо видимі колонки користувача без фото
+            visible_cols_meta = [col for col in ALL_COLUMNS if col[0] in self.visible_columns and col[0] != "id"]
+            if not visible_cols_meta:
+                visible_cols_meta = [("name", "Ім'я"), ("address", "Адреса"), ("Mobile_Phone", "Мобільний")]
+
+            headers = ["№"] + [col[1] for col in visible_cols_meta]
+            table_data = [[Paragraph(h, compact_header_style) for h in headers]]
+
+            # Розрахунок ширин колонок
+            col_id_w = 20
+            remain_w = doc_width - col_id_w
+            num_data_cols = len(visible_cols_meta)
+            data_col_w = remain_w / num_data_cols if num_data_cols > 0 else remain_w
+            col_widths = [col_id_w] + [data_col_w] * num_data_cols
+
             for row_idx in range(self.table.rowCount()):
-                p_id = int(self.table.item(row_idx, 0).text())
-
-                cur.execute("SELECT photo FROM photos WHERE people_id = ? ORDER BY photo_id DESC LIMIT 1", (p_id,))
-                photo_row = cur.fetchone()
-
-                img_flowable = ""
-                if photo_row and photo_row[0]:
-                    img_stream = io.BytesIO(photo_row[0])
-                    img_flowable = RLImage(img_stream, width=35, height=45)
-
-                row_cells = [img_flowable]
+                row_cells = [Paragraph(str(row_idx + 1), compact_cell_style)]
                 for col_id, _ in visible_cols_meta:
                     col_index = [c[0] for c in ALL_COLUMNS].index(col_id)
                     val = self.table.item(row_idx, col_index).text() if self.table.item(row_idx, col_index) else ""
-                    row_cells.append(Paragraph(val, body_style))
-
+                    row_cells.append(Paragraph(val, compact_cell_style))
                 table_data.append(row_cells)
 
-        total_width = 535
-        photo_width = 40
-        remain_width = total_width - photo_width
-        num_cols = len(visible_cols_meta)
-        other_widths = [remain_width / num_cols] * num_cols if num_cols > 0 else []
-        col_widths = [photo_width] + other_widths
-
-        t = Table(table_data, colWidths=col_widths, repeatRows=1)
-        t.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), style_cfg["header_bg"]),
-            ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-            ("TOPPADDING", (0, 0), (-1, -1), 4),
-            ("GRID", (0, 0), (-1, -1), 0.5, style_cfg["grid_color"]),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [style_cfg["row_bg1"], style_cfg["row_bg2"]]),
-        ]))
-
-        elements.append(t)
+            compact_table = Table(table_data, colWidths=col_widths, repeatRows=1)
+            compact_table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), style_cfg["header_bg"]),
+                ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("GRID", (0, 0), (-1, -1), 0.5, style_cfg["grid_color"]),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [style_cfg["row_bg1"], style_cfg["row_bg2"]]),
+            ]))
+            elements.append(compact_table)
 
         def canvas_factory(*args, **kwargs):
             return NumberedCanvas(*args, font_name=self.pdf_font, **kwargs)
