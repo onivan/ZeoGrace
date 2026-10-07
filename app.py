@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QMessageBox, QHeaderView, QSplitter, QDialog,
     QFormLayout, QTextEdit, QDateEdit, QDialogButtonBox, QComboBox,
     QSpinBox, QCheckBox, QListWidget, QListWidgetItem, QGroupBox,
-    QGridLayout, QFrame, QRadioButton, QButtonGroup
+    QGridLayout, QFrame, QRadioButton, QButtonGroup, QProgressDialog
 )
 
 from reportlab.lib.pagesizes import A4
@@ -131,16 +131,16 @@ PDF_STYLES = {
 
 PDF_LAYOUTS = {
     "a4_cards": {
-        "name": "А4 (по 2 картки на рядок)",
-        "desc": "Сторінка формату А4. По 2 картки в рядку з великою фотографією висотою 500px та повними відомостями."
+        "name": "А4",
+        "desc": "Формат А4. По 2 картки в рядку, кілька рядків на сторінці. Фотографії зберігають оригінальні пропорції."
     },
     "phone": {
         "name": "Для телефону",
-        "desc": "Розмір сторінки оптимізований під екран смартфона (9:16). По 3 плитки на кожній сторінці, по 1 в рядку."
+        "desc": "Оптимізовано для перегляду на смартфоні. Фото займає біля 1/3 ширини, мінімальні розриви для комфортного скролінгу."
     },
     "compact": {
         "name": "Компактний",
-        "desc": "Формат А4 без фотографій. Компактна таблиця з повторенням заголовків колонок на кожній сторінці."
+        "desc": "Таблиця формату А4 без фотографій. Оптимізована ширина колонок, номери телефонів без розриву, об'єднані статуси."
     }
 }
 
@@ -215,6 +215,26 @@ def format_phone(phone: str) -> str:
     elif len(digits) == 6:
         return f"{digits[:2]}-{digits[2:4]}-{digits[4:]}"
     return digits
+
+
+def get_proportional_image(photo_bytes: bytes, max_width: float, max_height: float):
+    """Створює ReportLab Image зі збереженням пропорцій оригіналу."""
+    if not photo_bytes:
+        return ""
+    try:
+        img_stream = io.BytesIO(photo_bytes)
+        with Image.open(io.BytesIO(photo_bytes)) as pil_img:
+            orig_w, orig_h = pil_img.size
+
+        if orig_w <= 0 or orig_h <= 0:
+            return ""
+
+        ratio = min(max_width / orig_w, max_height / orig_h)
+        target_w = orig_w * ratio
+        target_h = orig_h * ratio
+        return RLImage(img_stream, width=target_w, height=target_h)
+    except Exception:
+        return ""
 
 
 class NumberedCanvas(canvas.Canvas):
@@ -330,11 +350,12 @@ class PdfExportStyleDialog(QDialog):
 
         self.layout_radios = {}
         for key, lay_info in PDF_LAYOUTS.items():
-            rb = QRadioButton(f"<b>{lay_info['name']}</b>")
+            rb = QRadioButton(lay_info["name"])
             if key == self.selected_layout_key:
                 rb.setChecked(True)
             desc_lbl = QLabel(f"<span style='color: #64748B; font-size: 11px;'>{lay_info['desc']}</span>")
             desc_lbl.setWordWrap(True)
+            desc_lbl.setContentsMargins(20, 0, 0, 4)
             gb_lay_vbox.addWidget(rb)
             gb_lay_vbox.addWidget(desc_lbl)
             self.layout_radios[key] = rb
@@ -347,11 +368,12 @@ class PdfExportStyleDialog(QDialog):
 
         self.style_radios = {}
         for key, style_info in PDF_STYLES.items():
-            rb = QRadioButton(f"<b>{style_info['name']}</b>")
+            rb = QRadioButton(style_info["name"])
             if key == self.selected_style_key:
                 rb.setChecked(True)
             desc_lbl = QLabel(f"<span style='color: #64748B; font-size: 11px;'>{style_info['desc']}</span>")
             desc_lbl.setWordWrap(True)
+            desc_lbl.setContentsMargins(20, 0, 0, 4)
             gb_style_vbox.addWidget(rb)
             gb_style_vbox.addWidget(desc_lbl)
             self.style_radios[key] = rb
@@ -417,7 +439,6 @@ class ModalStatusFilterDialog(QDialog):
     def init_ui(self):
         main_layout = QVBoxLayout(self)
 
-        # Верхня панель (3 GroupBox: Церковний статус, Стать, Сімейний статус)
         top_layout = QHBoxLayout()
 
         gb_church = QGroupBox("Церковний статус")
@@ -440,10 +461,8 @@ class ModalStatusFilterDialog(QDialog):
 
         main_layout.addLayout(top_layout)
 
-        # Нижня панель (2 GroupBox: Група, Подія)
         bottom_layout = QHBoxLayout()
 
-        # GroupBox: Група
         gb_group = QGroupBox("Група")
         gb_group_lay = QVBoxLayout(gb_group)
 
@@ -466,7 +485,6 @@ class ModalStatusFilterDialog(QDialog):
 
         bottom_layout.addWidget(gb_group, 4)
 
-        # GroupBox: Подія
         gb_event = QGroupBox("Подія")
         gb_event_lay = QHBoxLayout(gb_event)
 
@@ -500,7 +518,6 @@ class ModalStatusFilterDialog(QDialog):
 
         main_layout.addLayout(bottom_layout)
 
-        # Завантаження даних
         st = self.initial_state
         self._fill_checklist(self.list_church, "list_church_status", st.get("church_status", []))
         self._fill_checklist(self.list_gender, "list_gender", st.get("gender", []))
@@ -516,7 +533,6 @@ class ModalStatusFilterDialog(QDialog):
 
         self._load_groups_table(st.get("group_id", None))
 
-        # Нижні кнопки керування (OK / Відмінити / Скинути все)
         btn_bar = QHBoxLayout()
         btn_clear_all = QPushButton("Скинути всі фільтри")
         btn_clear_all.clicked.connect(self.clear_all_filters)
@@ -1200,7 +1216,6 @@ class ZeoGraceApp(QMainWindow):
         self.table.setColumnCount(len(ALL_COLUMNS))
         self.table.setHorizontalHeaderLabels([col[1] for col in ALL_COLUMNS])
 
-        # Дозволяємо користувачу вільно регулювати розміри колонок та рядків
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
 
@@ -1709,15 +1724,64 @@ class ZeoGraceApp(QMainWindow):
 
         style_cfg = PDF_STYLES.get(chosen_style_key, PDF_STYLES["slate"])
 
-        save_path, _ = QFileDialog.getSaveFileName(self, "Зберегти PDF-звіт", "report.pdf", "PDF файли (*.pdf)")
+        # Автоматичне формування назви файлу
+        cur_date_str = datetime.now().strftime("%Y-%m-%d")
+        db_base_name = os.path.splitext(os.path.basename(self.db_path))[0]
+        layout_name_slug = {
+            "a4_cards": "A4",
+            "phone": "Phone",
+            "compact": "Compact"
+        }.get(chosen_layout_key, "Report")
+
+        # Скорочений опис фільтрів для імені файлу
+        filter_slugs = []
+        st = self.status_filter_state
+        if st.get("group_name"):
+            filter_slugs.append(f"Grp_{st['group_name'][:10]}")
+        if self.bd_this_week_active:
+            filter_slugs.append("BDWeek")
+        if self.search_edit.text().strip():
+            filter_slugs.append(f"Search_{self.search_edit.text().strip()[:8]}")
+        if any(st.get(k) for k in ["church_status", "gender", "family_status", "group_status", "event_type"]):
+            filter_slugs.append("Filtered")
+
+        filter_suffix = ("_" + "_".join(filter_slugs)) if filter_slugs else ""
+        # Очищення від некоректних символів для файлової системи
+        clean_suffix = "".join(c for c in filter_suffix if c.isalnum() or c in ("_", "-"))
+        default_file_name = f"{cur_date_str}_{db_base_name}_{layout_name_slug}{clean_suffix}.pdf"
+
+        # Останній вибраний шлях для збереження
+        last_dir = self.settings.value("last_pdf_export_dir", os.path.dirname(os.path.abspath(self.db_path)), type=str)
+        default_save_path = os.path.join(last_dir, default_file_name)
+
+        save_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Зберегти PDF-звіт",
+            default_save_path,
+            "PDF файли (*.pdf)"
+        )
         if not save_path:
             return
 
-        # Завантажуємо повні дані про парафіян із поточної таблиці
+        self.settings.setValue("last_pdf_export_dir", os.path.dirname(os.path.abspath(save_path)))
+
+        # Індикація прогресу
+        total_rows = self.table.rowCount()
+        progress = QProgressDialog("Підготовка даних для звіту...", "Скасувати", 0, total_rows + 5, self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(150)
+        progress.setValue(0)
+
         records = []
         with get_db_connection(self.db_path) as conn:
             cur = conn.cursor()
-            for row_idx in range(self.table.rowCount()):
+            for row_idx in range(total_rows):
+                if progress.wasCanceled():
+                    return
+                progress.setValue(row_idx)
+                progress.setLabelText(f"Обробка запису {row_idx + 1} з {total_rows}...")
+                QApplication.processEvents()
+
                 p_id = int(self.table.item(row_idx, 0).text())
                 cur.execute("""
                     SELECT p.id, p.name, p.address, p.Date_of_Birth, p.Date_of_Bapt,
@@ -1737,13 +1801,17 @@ class ZeoGraceApp(QMainWindow):
                 photo_row = cur.fetchone()
                 photo_bytes = photo_row[0] if (photo_row and photo_row[0]) else None
 
-                # Збираємо всі телефони через кому
-                phones = []
+                # Усі номери телефонів
+                raw_phones = []
                 for ph in [p_row[5], p_row[6], p_row[7], p_row[8]]:
                     fph = format_phone(ph)
-                    if fph and fph not in phones:
-                        phones.append(fph)
-                phone_str = ", ".join(phones) if phones else "—"
+                    if fph and fph not in raw_phones:
+                        raw_phones.append(fph)
+
+                phone_str = ", ".join(raw_phones) if raw_phones else "—"
+                # Нерозривні телефони для компактної таблиці
+                nobr_phones = [ph.replace(" ", "&nbsp;").replace("-", "&#8209;") for ph in raw_phones]
+                compact_phones_str = ", ".join(nobr_phones) if nobr_phones else "—"
 
                 records.append({
                     "id": p_row[0],
@@ -1752,6 +1820,7 @@ class ZeoGraceApp(QMainWindow):
                     "dob": p_row[3] or "—",
                     "bapt": p_row[4] or "—",
                     "phones": phone_str,
+                    "compact_phones": compact_phones_str,
                     "children": p_row[9] if p_row[9] is not None else 0,
                     "church_status": p_row[10] or "—",
                     "fam_status": p_row[11] or "—",
@@ -1760,15 +1829,23 @@ class ZeoGraceApp(QMainWindow):
                 })
 
         total_records_count = len(records)
+        progress.setValue(total_rows + 1)
+        progress.setLabelText("Генерація макета PDF...")
+        QApplication.processEvents()
 
-        # Формування параметрів сторінки
+        styles = getSampleStyleSheet()
+
+        # Формування параметрів документа та розмірів сторінки
         if chosen_layout_key == "phone":
-            # 108mm x 192mm (пропорція 9:16 під телефонний екран)
-            page_size = (108 * 2.834, 192 * 2.834)
-            left_margin = right_margin = 14
-            top_margin = 14
-            bottom_margin = 18
-            doc_width = page_size[0] - (left_margin + right_margin)
+            # Розрахунок зручної висоти сторінки для телефону з мінімальними пустотами:
+            # Ширина 108mm (306 pt), 3 картки висотою ~150 pt кожна + заголовок + відступи
+            phone_w = 108 * 2.834
+            phone_h = 560  # підігнано під 3 плитки без зайвого порожнього простору
+            page_size = (phone_w, phone_h)
+            left_margin = right_margin = 12
+            top_margin = 12
+            bottomMargin = 14
+            doc_width = phone_w - (left_margin + right_margin)
         else:
             page_size = A4
             left_margin = right_margin = 25
@@ -1782,25 +1859,23 @@ class ZeoGraceApp(QMainWindow):
             leftMargin=left_margin,
             rightMargin=right_margin,
             topMargin=top_margin,
-            bottomMargin=bottomMargin if chosen_layout_key != "phone" else bottom_margin
+            bottomMargin=bottomMargin
         )
 
         elements = []
-        styles = getSampleStyleSheet()
 
-        title_font_size = 14 if chosen_layout_key == "phone" else 16
+        title_font_size = 13 if chosen_layout_key == "phone" else 15
         title_style = ParagraphStyle(
             name="ReportTitle",
             parent=styles["Heading1"],
             fontName=self.pdf_font,
             fontSize=title_font_size,
-            leading=title_font_size + 4,
-            spaceAfter=8,
+            leading=title_font_size + 3,
+            spaceAfter=6,
             alignment=1,
             textColor=style_cfg["title_color"]
         )
 
-        # Рядок активних фільтрів + кількість записів
         filter_descs = self._get_filter_descriptions()
         filter_parts = []
         if filter_descs:
@@ -1812,8 +1887,8 @@ class ZeoGraceApp(QMainWindow):
             name="ReportFilter",
             parent=styles["Normal"],
             fontName=self.pdf_font,
-            fontSize=7 if chosen_layout_key == "phone" else 8,
-            leading=10,
+            fontSize=6.5 if chosen_layout_key == "phone" else 7.5,
+            leading=9.5,
             textColor=style_cfg["filter_text_color"]
         )
 
@@ -1822,76 +1897,66 @@ class ZeoGraceApp(QMainWindow):
         filter_table.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, -1), style_cfg["filter_box_bg"]),
             ("BOX", (0, 0), (-1, -1), 0.5, style_cfg["filter_box_border"]),
-            ("TOPPADDING", (0, 0), (-1, -1), 3),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-            ("LEFTPADDING", (0, 0), (-1, -1), 5),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
         ]))
         elements.append(filter_table)
-        elements.append(Spacer(1, 8))
+        elements.append(Spacer(1, 6))
 
-        # --- Генерація згідно з обраним лейаутом ---
-
+        # --- 1. Лейаут "А4" ---
         if chosen_layout_key == "a4_cards":
-            # Варіант 1 (А4): по 2 картки в рядку, велике фото (висота 500px / 375pt, ширина пропорційна)
+            # 2 картки в рядку, поміщається кілька рядків на сторінку (до 3 рядків = 6 карток/сторінка)
             card_w = (doc_width - 8) / 2
-            photo_h = 500 * 0.75  # ~375 pt (500 px у 72/96 dpi еквіваленті)
-            photo_w = card_w * 0.44
-            info_w = card_w - photo_w - 10
+            card_photo_max_w = card_w * 0.38
+            card_photo_max_h = 165
+            info_w = card_w - card_photo_max_w - 8
 
             text_style = ParagraphStyle(
                 name="CardTextA4",
                 parent=styles["Normal"],
                 fontName=self.pdf_font,
-                fontSize=8,
-                leading=10.5
+                fontSize=7.2,
+                leading=9.2
             )
             title_card_style = ParagraphStyle(
                 name="CardTitleA4",
                 parent=styles["Normal"],
                 fontName=self.pdf_font,
-                fontSize=9.5,
-                leading=12,
+                fontSize=8.5,
+                leading=10.5,
                 textColor=style_cfg["title_color"]
             )
 
             cards = []
             for idx, rec in enumerate(records, start=1):
-                img_widget = ""
-                if rec["photo_bytes"]:
-                    try:
-                        img_stream = io.BytesIO(rec["photo_bytes"])
-                        img_widget = RLImage(img_stream, width=photo_w, height=photo_h)
-                    except Exception:
-                        img_widget = ""
+                img_widget = get_proportional_image(rec["photo_bytes"], card_photo_max_w, card_photo_max_h)
 
                 info_lines = [
                     Paragraph(f"<b>#{idx}. {rec['name']}</b>", title_card_style),
-                    Paragraph(f"<b>Телефони:</b> {rec['phones']}", text_style),
+                    Paragraph(f"<b>Тел:</b> {rec['phones']}", text_style),
                     Paragraph(f"<b>Адреса:</b> {rec['address']}", text_style),
-                    Paragraph(f"<b>Дата нар.:</b> {rec['dob']}", text_style),
-                    Paragraph(f"<b>Хрещення:</b> {rec['bapt']}", text_style),
-                    Paragraph(f"<b>Церк. статус:</b> {rec['church_status']}", text_style),
-                    Paragraph(f"<b>Сім. статус:</b> {rec['fam_status']}", text_style),
-                    Paragraph(f"<b>Дітей:</b> {rec['children']}", text_style),
+                    Paragraph(f"<b>ДН:</b> {rec['dob']} | <b>Хрещ:</b> {rec['bapt']}", text_style),
+                    Paragraph(f"<b>Статус:</b> {rec['church_status']}", text_style),
+                    Paragraph(f"<b>Сім'я:</b> {rec['fam_status']} (дітей: {rec['children']})", text_style),
                 ]
                 if rec["email"]:
                     info_lines.append(Paragraph(f"<b>Email:</b> {rec['email']}", text_style))
 
-                card_table = Table([[img_widget, info_lines]], colWidths=[photo_w, info_w])
+                card_table = Table([[img_widget, info_lines]], colWidths=[card_photo_max_w, info_w])
                 card_table.setStyle(TableStyle([
                     ("BACKGROUND", (0, 0), (-1, -1), style_cfg["card_bg"]),
                     ("BOX", (0, 0), (-1, -1), 0.5, style_cfg["card_border"]),
                     ("VALIGN", (0, 0), (-1, -1), "TOP"),
                     ("ALIGN", (0, 0), (0, 0), "CENTER"),
-                    ("TOPPADDING", (0, 0), (-1, -1), 6),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 5),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
                 ]))
                 cards.append(card_table)
 
-            # Розміщуємо по 2 картки в рядок
             grid_data = []
             for i in range(0, len(cards), 2):
                 row_cells = [cards[i]]
@@ -1905,44 +1970,39 @@ class ZeoGraceApp(QMainWindow):
                 cards_grid = Table(grid_data, colWidths=[card_w, card_w])
                 cards_grid.setStyle(TableStyle([
                     ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("TOPPADDING", (0, 0), (-1, -1), 4),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ("TOPPADDING", (0, 0), (-1, -1), 3),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
                     ("LEFTPADDING", (0, 0), (-1, -1), 2),
                     ("RIGHTPADDING", (0, 0), (-1, -1), 2),
                 ]))
                 elements.append(cards_grid)
 
+        # --- 2. Лейаут "Для телефону" ---
         elif chosen_layout_key == "phone":
-            # Варіант 2 (Для телефону): екран телефону, рівно по 3 плитки на сторінці (по 1 в рядку)
+            # Фотографія займає близько 1/3 ширини картки, мінімальні розриви
             card_w = doc_width
-            card_photo_w = 68
-            card_photo_h = 92
-            info_w = card_w - card_photo_w - 8
+            card_photo_max_w = card_w * 0.32
+            card_photo_max_h = 135
+            info_w = card_w - card_photo_max_w - 6
 
             phone_text_style = ParagraphStyle(
                 name="CardPhoneText",
                 parent=styles["Normal"],
                 fontName=self.pdf_font,
                 fontSize=6.8,
-                leading=8.5
+                leading=8.6
             )
             phone_title_style = ParagraphStyle(
                 name="CardPhoneTitle",
                 parent=styles["Normal"],
                 fontName=self.pdf_font,
-                fontSize=8.5,
-                leading=10.5,
+                fontSize=8.2,
+                leading=10.0,
                 textColor=style_cfg["title_color"]
             )
 
             for idx, rec in enumerate(records, start=1):
-                img_widget = ""
-                if rec["photo_bytes"]:
-                    try:
-                        img_stream = io.BytesIO(rec["photo_bytes"])
-                        img_widget = RLImage(img_stream, width=card_photo_w, height=card_photo_h)
-                    except Exception:
-                        img_widget = ""
+                img_widget = get_proportional_image(rec["photo_bytes"], card_photo_max_w, card_photo_max_h)
 
                 info_lines = [
                     Paragraph(f"<b>#{idx}. {rec['name']}</b>", phone_title_style),
@@ -1952,72 +2012,92 @@ class ZeoGraceApp(QMainWindow):
                     Paragraph(f"<b>Статус:</b> {rec['church_status']} | <b>Сім:</b> {rec['fam_status']}", phone_text_style),
                     Paragraph(f"<b>Дітей:</b> {rec['children']}", phone_text_style),
                 ]
+                if rec["email"]:
+                    info_lines.append(Paragraph(f"<b>Email:</b> {rec['email']}", phone_text_style))
 
-                card_table = Table([[img_widget, info_lines]], colWidths=[card_photo_w, info_w])
+                card_table = Table([[img_widget, info_lines]], colWidths=[card_photo_max_w, info_w])
                 card_table.setStyle(TableStyle([
                     ("BACKGROUND", (0, 0), (-1, -1), style_cfg["card_bg"]),
                     ("BOX", (0, 0), (-1, -1), 0.5, style_cfg["card_border"]),
                     ("VALIGN", (0, 0), (-1, -1), "TOP"),
                     ("ALIGN", (0, 0), (0, 0), "CENTER"),
-                    ("TOPPADDING", (0, 0), (-1, -1), 4),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                    ("TOPPADDING", (0, 0), (-1, -1), 3),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 3),
                 ]))
 
                 elements.append(card_table)
-                elements.append(Spacer(1, 4))
+                elements.append(Spacer(1, 3))
 
-                # По 3 картки на сторінку
+                # Рівно по 3 картки на сторінку
                 if idx % 3 == 0 and idx < len(records):
                     elements.append(PageBreak())
 
+        # --- 3. Лейаут "Компактний" ---
         else:
-            # Варіант 3 (Компактний): сторінка А4, таблиця БЕЗ фотографій, повторення заголовків на кожній сторінці
             compact_header_style = ParagraphStyle(
                 name="CompactHeader",
                 parent=styles["Normal"],
                 fontName=self.pdf_font,
-                fontSize=8,
-                leading=10,
+                fontSize=7.5,
+                leading=9.5,
                 textColor=style_cfg["header_text"]
             )
             compact_cell_style = ParagraphStyle(
                 name="CompactCell",
                 parent=styles["Normal"],
                 fontName=self.pdf_font,
-                fontSize=7.5,
-                leading=9.5
+                fontSize=7.0,
+                leading=8.8
             )
 
-            # Вибираємо видимі колонки користувача без фото
-            visible_cols_meta = [col for col in ALL_COLUMNS if col[0] in self.visible_columns and col[0] != "id"]
-            if not visible_cols_meta:
-                visible_cols_meta = [("name", "Ім'я"), ("address", "Адреса"), ("Mobile_Phone", "Мобільний")]
+            # Оптимізовані колонки:
+            # 1. № (18pt)
+            # 2. П.І.Б. (збільшено до 125pt)
+            # 3. Адреса (110pt)
+            # 4. Телефони (105pt, нерозривні номери)
+            # 5. ДН / Хрещення (62pt)
+            # 6. Додаткові дані / статуси (125pt)
+            col_widths = [18, 125, 110, 105, 62, 125]
+            headers = [
+                Paragraph("<b>№</b>", compact_header_style),
+                Paragraph("<b>П.І.Б.</b>", compact_header_style),
+                Paragraph("<b>Адреса</b>", compact_header_style),
+                Paragraph("<b>Номери телефонів</b>", compact_header_style),
+                Paragraph("<b>ДН / Хрещення</b>", compact_header_style),
+                Paragraph("<b>Додаткові дані (статуси, діти)</b>", compact_header_style)
+            ]
+            table_data = [headers]
 
-            headers = ["№"] + [col[1] for col in visible_cols_meta]
-            table_data = [[Paragraph(h, compact_header_style) for h in headers]]
+            for idx, rec in enumerate(records, start=1):
+                dob_bapt_text = f"{rec['dob']}<br/>{rec['bapt']}" if rec['bapt'] != "—" else rec['dob']
 
-            # Розрахунок ширин колонок
-            col_id_w = 20
-            remain_w = doc_width - col_id_w
-            num_data_cols = len(visible_cols_meta)
-            data_col_w = remain_w / num_data_cols if num_data_cols > 0 else remain_w
-            col_widths = [col_id_w] + [data_col_w] * num_data_cols
+                extras = []
+                if rec['church_status'] != "—":
+                    extras.append(f"Церк: {rec['church_status']}")
+                if rec['fam_status'] != "—":
+                    extras.append(f"Сім'я: {rec['fam_status']}")
+                if rec['children']:
+                    extras.append(f"Дітей: {rec['children']}")
+                if rec['email']:
+                    extras.append(f"{rec['email']}")
+                extras_text = " | ".join(extras) if extras else "—"
 
-            for row_idx in range(self.table.rowCount()):
-                row_cells = [Paragraph(str(row_idx + 1), compact_cell_style)]
-                for col_id, _ in visible_cols_meta:
-                    col_index = [c[0] for c in ALL_COLUMNS].index(col_id)
-                    val = self.table.item(row_idx, col_index).text() if self.table.item(row_idx, col_index) else ""
-                    row_cells.append(Paragraph(val, compact_cell_style))
-                table_data.append(row_cells)
+                table_data.append([
+                    Paragraph(str(idx), compact_cell_style),
+                    Paragraph(f"<b>{rec['name']}</b>", compact_cell_style),
+                    Paragraph(rec['address'], compact_cell_style),
+                    Paragraph(rec['compact_phones'], compact_cell_style),
+                    Paragraph(dob_bapt_text, compact_cell_style),
+                    Paragraph(extras_text, compact_cell_style),
+                ])
 
             compact_table = Table(table_data, colWidths=col_widths, repeatRows=1)
             compact_table.setStyle(TableStyle([
                 ("BACKGROUND", (0, 0), (-1, 0), style_cfg["header_bg"]),
                 ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
                 ("TOPPADDING", (0, 0), (-1, -1), 3),
                 ("GRID", (0, 0), (-1, -1), 0.5, style_cfg["grid_color"]),
@@ -2025,14 +2105,21 @@ class ZeoGraceApp(QMainWindow):
             ]))
             elements.append(compact_table)
 
+        progress.setValue(total_rows + 3)
+        progress.setLabelText("Збирання PDF-файлу...")
+        QApplication.processEvents()
+
         def canvas_factory(*args, **kwargs):
             return NumberedCanvas(*args, font_name=self.pdf_font, **kwargs)
 
         try:
             doc.build(elements, canvasmaker=canvas_factory)
-            QMessageBox.information(self, "Успіх", f"Звіт успішно збережено:\n{save_path}")
+            progress.setValue(total_rows + 5)
+            self.statusBar().showMessage(f"PDF-звіт успішно збережено: {os.path.basename(save_path)}", 8000)
         except Exception as e:
             QMessageBox.critical(self, "Помилка", f"Не вдалося створити PDF:\n{str(e)}")
+        finally:
+            progress.close()
 
 
 if __name__ == "__main__":
