@@ -406,7 +406,9 @@ class PdfPreviewWidget(QWidget):
 
         # Заголовок сторінки
         painter.setPen(c_title)
-        painter.setFont(QFont("Arial", 8, QFont.Weight.Bold))
+        title_font = QFont("Arial", 8)
+        title_font.setBold(True)
+        painter.setFont(title_font)
         painter.drawText(QRectF(page_x, page_y + 6, page_w, 14), Qt.AlignmentFlag.AlignCenter, "Звіт списку громади")
 
         # Блок активних фільтрів
@@ -458,7 +460,9 @@ class PdfPreviewWidget(QWidget):
                     tx = x_c + ph_w + 6
                     tw = c_w - ph_w - 9
                     painter.setPen(c_title)
-                    painter.setFont(QFont("Arial", 5, QFont.Weight.Bold))
+                    card_title_font = QFont("Arial", 5)
+                    card_title_font.setBold(True)
+                    painter.setFont(card_title_font)
                     painter.drawText(QRectF(tx, y_c + 3, tw, 8), Qt.AlignmentFlag.AlignLeft, rec_name[:22])
 
                     painter.setPen(Qt.PenStyle.NoPen)
@@ -472,12 +476,10 @@ class PdfPreviewWidget(QWidget):
 
         # --- 2. Для телефону (формат А5, 3 плитки, динамічне фото від висоти) ---
         elif self.layout_key == "phone":
-            # Розрахунок висоти картки від масштабу висоти phone_card_height
             scale_factor = self.phone_card_height / 150.0
             card_h = min(66.0 * scale_factor, (cnt_h - 12) / 3.1)
             c_w = cnt_w
 
-            # Динамічна ширина фото від висоти картки
             ph_h = max(25.0, card_h - 6)
             ph_w = min(c_w * 0.45, ph_h * 0.78)
 
@@ -506,7 +508,9 @@ class PdfPreviewWidget(QWidget):
                 tx = cnt_left + ph_w + 6
                 tw = c_w - ph_w - 9
                 painter.setPen(c_title)
-                painter.setFont(QFont("Arial", 5.5, QFont.Weight.Bold))
+                phone_title_font = QFont("Arial", 6)
+                phone_title_font.setBold(True)
+                painter.setFont(phone_title_font)
                 painter.drawText(QRectF(tx, y_c + 3, tw, 9), Qt.AlignmentFlag.AlignLeft, rec_name[:24])
 
                 painter.setPen(Qt.PenStyle.NoPen)
@@ -792,6 +796,7 @@ class ModalStatusFilterDialog(QDialog):
 
         st = self.initial_state
         self._fill_checklist(self.list_church, "list_church_status", st.get("church_status", []))
+        self._fill_checklist(self.list_gender, "list_gender", st.get("gender", []))
         self._fill_checklist(self.list_gender, "list_gender", st.get("gender", []))
         self._fill_checklist(self.list_fam, "list_family_status", st.get("family_status", []))
         self._fill_checklist(self.list_group_status, "list_group_status", st.get("group_status", []))
@@ -2158,7 +2163,6 @@ class ZeoGraceApp(QMainWindow):
         elif layout_key == "phone":
             card_w = doc_width
             card_photo_max_h = max(60, phone_card_height - 14)
-            # Ширина фото розраховується від висоти, не більше ніж 48% картки
             card_photo_max_w = min(card_w * 0.48, card_photo_max_h * 0.78)
             info_w = card_w - card_photo_max_w - 8
 
@@ -2211,7 +2215,6 @@ class ZeoGraceApp(QMainWindow):
                 elements.append(card_table)
                 elements.append(Spacer(1, 4))
 
-                # По 3 картки на сторінку А5
                 if idx % 3 == 0 and idx < len(records):
                     elements.append(PageBreak())
 
