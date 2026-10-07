@@ -4,29 +4,21 @@ import os
 import shutil
 import sqlite3
 import sys
-import tempfile
 from datetime import datetime
 from PIL import Image
 
-from PyQt6.QtCore import Qt, QDate, QSettings, QRectF, QSize
-from PyQt6.QtGui import QPixmap, QAction, QPainter, QColor, QPen, QImage
+from PyQt6.QtCore import Qt, QDate, QSettings, QRectF
+from PyQt6.QtGui import QPixmap, QAction, QPainter, QColor, QPen, QFont
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTableWidget, QTableWidgetItem, QPushButton, QLineEdit, QLabel,
     QFileDialog, QMessageBox, QHeaderView, QSplitter, QDialog,
     QFormLayout, QTextEdit, QDateEdit, QDialogButtonBox, QComboBox,
     QSpinBox, QCheckBox, QListWidget, QListWidgetItem, QGroupBox,
-    QGridLayout, QFrame, QRadioButton, QButtonGroup, QProgressDialog,
-    QScrollArea
+    QGridLayout, QFrame, QRadioButton, QButtonGroup, QProgressDialog
 )
 
-try:
-    from PyQt6.QtPdf import QPdfDocument
-    HAS_QT_PDF = True
-except ImportError:
-    HAS_QT_PDF = False
-
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4, A5
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Image as RLImage, Spacer, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -144,7 +136,7 @@ PDF_LAYOUTS = {
     },
     "phone": {
         "name": "Для телефону",
-        "desc": "Оптимізовано для перегляду на смартфоні. Розмір фотографії динамічно залежить від висоти картки."
+        "desc": "Фіксований формат А5. 3 плитки на сторінку, ширина фотографії залежить від висоти картки."
     },
     "compact": {
         "name": "Компактний",
@@ -348,18 +340,21 @@ class ColumnSelectionDialog(QDialog):
 
 
 class PdfPreviewWidget(QWidget):
-    """Віджет для показу згенерованої першої сторінки PDF."""
+    """Швидкодіючий віджет для динамічного показу попереднього перегляду 1-ї сторінки."""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.preview_pixmap = None
-        self.setMinimumSize(250, 350)
+        self.layout_key = "a4_cards"
+        self.style_key = "slate"
+        self.phone_card_height = 150
+        self.records = []
+        self.setMinimumSize(280, 400)
         self.setStyleSheet("background-color: #F1F5F9; border: 1px solid #CBD5E1; border-radius: 4px;")
 
-    def set_page_image(self, qimage: QImage):
-        if qimage and not qimage.isNull():
-            self.preview_pixmap = QPixmap.fromImage(qimage)
-        else:
-            self.preview_pixmap = None
+    def set_preview_data(self, layout_key: str, style_key: str, phone_card_height: int, records: list):
+        self.layout_key = layout_key
+        self.style_key = style_key
+        self.phone_card_height = phone_card_height
+        self.records = records or []
         self.update()
 
     def paintEvent(self, event):
@@ -371,23 +366,190 @@ class PdfPreviewWidget(QWidget):
         h = self.height()
         painter.fillRect(0, 0, w, h, QColor("#F1F5F9"))
 
-        if self.preview_pixmap and not self.preview_pixmap.isNull():
-            scaled = self.preview_pixmap.scaled(
-                w - 16, h - 16,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
-            px = (w - scaled.width()) / 2
-            py = (h - scaled.height()) / 2
+        style_cfg = PDF_STYLES.get(self.style_key, PDF_STYLES["slate"])
+        c_head = reportlab_color_to_qcolor(style_cfg["header_bg"])
+        c_title = reportlab_color_to_qcolor(style_cfg["title_color"])
+        c_card_bg = reportlab_color_to_qcolor(style_cfg["card_bg"])
+        c_border = reportlab_color_to_qcolor(style_cfg["card_border"])
+        c_filter = reportlab_color_to_qcolor(style_cfg["filter_box_bg"])
 
-            # Тінь
-            painter.fillRect(int(px + 3), int(py + 3), scaled.width(), scaled.height(), QColor(0, 0, 0, 30))
-            painter.drawPixmap(int(px), int(py), scaled)
-            painter.setPen(QPen(QColor("#94A3B8"), 1))
-            painter.drawRect(int(px), int(py), scaled.width(), scaled.height())
+        margin = 12
+        avail_w = w - 2 * margin
+        avail_h = h - 2 * margin
+
+        # Розрахунок геометрії «аркуша» згідно з форматом
+        if self.layout_key == "phone":
+            # Фіксований формат А5 (148 x 210 мм, співвідношення ~ 1 : 1.414)
+            aspect = 1.414
         else:
-            painter.setPen(QColor("#64748B"))
-            painter.drawText(QRectF(0, 0, w, h), Qt.AlignmentFlag.AlignCenter, "Генерація першої сторінки...")
+            # Формат А4 (210 x 297 мм, співвідношення ~ 1 : 1.414)
+            aspect = 1.414
+
+        page_h = avail_h
+        page_w = page_h / aspect
+        if page_w > avail_w:
+            page_w = avail_w
+            page_h = page_w * aspect
+
+        page_x = (w - page_w) / 2
+        page_y = (h - page_h) / 2
+        page_rect = QRectF(page_x, page_y, page_w, page_h)
+
+        # Тінь та аркуш
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 30))
+        painter.drawRoundedRect(page_rect.translated(2.5, 3.5), 3, 3)
+
+        painter.setPen(QPen(QColor("#CBD5E1"), 1))
+        painter.setBrush(QColor("#FFFFFF"))
+        painter.drawRoundedRect(page_rect, 3, 3)
+
+        # Заголовок сторінки
+        painter.setPen(c_title)
+        painter.setFont(QFont("Arial", 8, QFont.Weight.Bold))
+        painter.drawText(QRectF(page_x, page_y + 6, page_w, 14), Qt.AlignmentFlag.AlignCenter, "Звіт списку громади")
+
+        # Блок активних фільтрів
+        f_rect = QRectF(page_x + 10, page_y + 22, page_w - 20, 10)
+        painter.setPen(QPen(c_border, 0.5))
+        painter.setBrush(c_filter)
+        painter.drawRoundedRect(f_rect, 1.5, 1.5)
+
+        cnt_left = page_x + 10
+        cnt_top = page_y + 36
+        cnt_w = page_w - 20
+        cnt_h = page_h - 48
+
+        # --- 1. А4: по 2 картки в рядку ---
+        if self.layout_key == "a4_cards":
+            col_gap = 6
+            c_w = (cnt_w - col_gap) / 2
+            c_h = min(62.0, (cnt_h - 12) / 3.1)
+
+            card_idx = 0
+            for r in range(3):
+                y_c = cnt_top + r * (c_h + 4)
+                if y_c + c_h > page_y + page_h - 12:
+                    break
+                for c in range(2):
+                    x_c = cnt_left + c * (c_w + col_gap)
+                    c_rect = QRectF(x_c, y_c, c_w, c_h)
+                    painter.setPen(QPen(c_border, 0.5))
+                    painter.setBrush(c_card_bg)
+                    painter.drawRoundedRect(c_rect, 2, 2)
+
+                    # Фото картки
+                    ph_w = c_w * 0.36
+                    ph_h = c_h - 6
+                    ph_rect = QRectF(x_c + 3, y_c + 3, ph_w, ph_h)
+                    painter.fillRect(ph_rect, QColor("#E2E8F0"))
+
+                    rec_name = f"#{card_idx+1} Парафіянин"
+                    if card_idx < len(self.records):
+                        rec_name = f"#{card_idx+1} {self.records[card_idx].get('name', '')}"
+                        p_bytes = self.records[card_idx].get("photo_bytes")
+                        if p_bytes:
+                            px = QPixmap()
+                            if px.loadFromData(p_bytes):
+                                s_px = px.scaled(int(ph_w), int(ph_h), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                                painter.drawPixmap(int(x_c + 3 + (ph_w - s_px.width())/2), int(y_c + 3 + (ph_h - s_px.height())/2), s_px)
+
+                    # Текстова частина картки
+                    tx = x_c + ph_w + 6
+                    tw = c_w - ph_w - 9
+                    painter.setPen(c_title)
+                    painter.setFont(QFont("Arial", 5, QFont.Weight.Bold))
+                    painter.drawText(QRectF(tx, y_c + 3, tw, 8), Qt.AlignmentFlag.AlignLeft, rec_name[:22])
+
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(QColor("#94A3B8"))
+                    painter.drawRect(QRectF(tx, y_c + 13, tw * 0.9, 1.8))
+                    painter.drawRect(QRectF(tx, y_c + 18, tw * 0.75, 1.8))
+                    painter.drawRect(QRectF(tx, y_c + 23, tw * 0.85, 1.8))
+                    painter.drawRect(QRectF(tx, y_c + 28, tw * 0.5, 1.8))
+
+                    card_idx += 1
+
+        # --- 2. Для телефону (формат А5, 3 плитки, динамічне фото від висоти) ---
+        elif self.layout_key == "phone":
+            # Розрахунок висоти картки від масштабу висоти phone_card_height
+            scale_factor = self.phone_card_height / 150.0
+            card_h = min(66.0 * scale_factor, (cnt_h - 12) / 3.1)
+            c_w = cnt_w
+
+            # Динамічна ширина фото від висоти картки
+            ph_h = max(25.0, card_h - 6)
+            ph_w = min(c_w * 0.45, ph_h * 0.78)
+
+            for i in range(3):
+                y_c = cnt_top + i * (card_h + 5)
+                if y_c + card_h > page_y + page_h - 12:
+                    break
+                c_rect = QRectF(cnt_left, y_c, c_w, card_h)
+                painter.setPen(QPen(c_border, 0.5))
+                painter.setBrush(c_card_bg)
+                painter.drawRoundedRect(c_rect, 2.5, 2.5)
+
+                ph_rect = QRectF(cnt_left + 3, y_c + 3, ph_w, ph_h)
+                painter.fillRect(ph_rect, QColor("#E2E8F0"))
+
+                rec_name = f"#{i+1} Парафіянин"
+                if i < len(self.records):
+                    rec_name = f"#{i+1} {self.records[i].get('name', '')}"
+                    p_bytes = self.records[i].get("photo_bytes")
+                    if p_bytes:
+                        px = QPixmap()
+                        if px.loadFromData(p_bytes):
+                            s_px = px.scaled(int(ph_w), int(ph_h), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                            painter.drawPixmap(int(cnt_left + 3 + (ph_w - s_px.width())/2), int(y_c + 3 + (ph_h - s_px.height())/2), s_px)
+
+                tx = cnt_left + ph_w + 6
+                tw = c_w - ph_w - 9
+                painter.setPen(c_title)
+                painter.setFont(QFont("Arial", 5.5, QFont.Weight.Bold))
+                painter.drawText(QRectF(tx, y_c + 3, tw, 9), Qt.AlignmentFlag.AlignLeft, rec_name[:24])
+
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor("#64748B"))
+                painter.drawRect(QRectF(tx, y_c + 14, tw * 0.85, 2.0))
+                painter.drawRect(QRectF(tx, y_c + 19, tw * 0.95, 2.0))
+                painter.drawRect(QRectF(tx, y_c + 24, tw * 0.7, 2.0))
+                painter.drawRect(QRectF(tx, y_c + 29, tw * 0.5, 2.0))
+
+        # --- 3. Компактний (таблиця без фото) ---
+        else:
+            tbl_h = cnt_h - 4
+            tbl_rect = QRectF(cnt_left, cnt_top, cnt_w, tbl_h)
+
+            row_h = 13.0
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(c_head)
+            painter.drawRect(QRectF(cnt_left, cnt_top, cnt_w, row_h))
+
+            c_r1 = reportlab_color_to_qcolor(style_cfg["row_bg1"])
+            c_r2 = reportlab_color_to_qcolor(style_cfg["row_bg2"])
+            num_rows = int((tbl_h - row_h) / row_h)
+
+            for r in range(min(num_rows, 16)):
+                ry = cnt_top + row_h + r * row_h
+                painter.setBrush(c_r1 if r % 2 == 0 else c_r2)
+                painter.drawRect(QRectF(cnt_left, ry, cnt_w, row_h))
+
+            painter.setPen(QPen(reportlab_color_to_qcolor(style_cfg["grid_color"]), 0.5))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(tbl_rect)
+
+            col_splits = [0.06, 0.30, 0.52, 0.74, 0.86]
+            for frac in col_splits:
+                sx = cnt_left + cnt_w * frac
+                painter.drawLine(int(sx), int(cnt_top), int(sx), int(cnt_top + tbl_h))
+
+        # Нижня мітка формату і сторінки
+        fmt_label = "Формат: A5" if self.layout_key == "phone" else "Формат: A4"
+        painter.setPen(QColor("#94A3B8"))
+        painter.setFont(QFont("Arial", 5))
+        painter.drawText(QRectF(page_x + 10, page_y + page_h - 11, 80, 8), Qt.AlignmentFlag.AlignLeft, fmt_label)
+        painter.drawText(QRectF(page_x + page_w - 70, page_y + page_h - 11, 60, 8), Qt.AlignmentFlag.AlignRight, "Стор. 1 з 3")
 
 
 class PdfExportStyleDialog(QDialog):
@@ -396,16 +558,23 @@ class PdfExportStyleDialog(QDialog):
         super().__init__(parent)
         self.app = app_instance
         self.setWindowTitle("Параметри експорту в PDF")
-        self.resize(760, 540)
+        self.resize(860, 560)
         self.selected_layout_key = current_layout if current_layout in PDF_LAYOUTS else "a4_cards"
         self.selected_style_key = current_style if current_style in PDF_STYLES else "slate"
         self.phone_card_height = current_card_h
+        self.preview_records = []
+        if self.app:
+            self.preview_records = self.app._get_records_for_export(limit=6)
         self.init_ui()
 
     def init_ui(self):
         root_layout = QHBoxLayout(self)
 
-        left_panel = QVBoxLayout()
+        # Ліва панель із фіксованою шириною
+        left_widget = QWidget()
+        left_widget.setFixedWidth(380)
+        left_panel = QVBoxLayout(left_widget)
+        left_panel.setContentsMargins(0, 0, 0, 0)
 
         # 1. Вибір макета (Layout)
         gb_layout = QGroupBox("1. Оберіть макет (лейаут) сторінки")
@@ -470,14 +639,14 @@ class PdfExportStyleDialog(QDialog):
         buttons.rejected.connect(self.reject)
         left_panel.addWidget(buttons)
 
-        root_layout.addLayout(left_panel, 3)
+        root_layout.addWidget(left_widget, 0)
 
-        # Права колонка — попередній перегляд 1-ї сторінки
-        gb_preview = QGroupBox("Попередній перегляд 1-ї сторінки PDF")
+        # Права колонка — попередній перегляд (розтягується автоматично)
+        gb_preview = QGroupBox("Попередній перегляд 1-ї сторінки")
         preview_vbox = QVBoxLayout(gb_preview)
         self.preview_widget = PdfPreviewWidget()
         preview_vbox.addWidget(self.preview_widget)
-        root_layout.addWidget(gb_preview, 2)
+        root_layout.addWidget(gb_preview, 1)
 
         self._on_options_changed()
 
@@ -487,10 +656,7 @@ class PdfExportStyleDialog(QDialog):
         curr_height = self.spin_card_height.value()
 
         self.card_h_container.setEnabled(curr_layout == "phone")
-
-        if self.app:
-            qimg = self.app.render_pdf_first_page_image(curr_layout, curr_style, curr_height)
-            self.preview_widget.set_page_image(qimg)
+        self.preview_widget.set_preview_data(curr_layout, curr_style, curr_height, self.preview_records)
 
     def get_selected_layout(self):
         for key, rb in self.layout_radios.items():
@@ -1786,7 +1952,7 @@ class ZeoGraceApp(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Помилка", f"Не вдалося зберегти фото:\n{str(e)}")
 
-    # --- Генерація PDF (єдина універсальна функція) ---
+    # --- Генерація PDF ---
 
     def _get_records_for_export(self, limit=None):
         records = []
@@ -1845,21 +2011,19 @@ class ZeoGraceApp(QMainWindow):
         style_cfg = PDF_STYLES.get(style_key, PDF_STYLES["slate"])
 
         if records is None:
-            # Для прев'ю першої сторінки беремо лише необхідну кількість карток для 1-ї сторінки
             limit = 6 if layout_key == "a4_cards" else (3 if layout_key == "phone" else 20)
             records = self._get_records_for_export(limit=limit if first_page_only else None)
 
         total_records_count = len(records)
         styles = getSampleStyleSheet()
 
+        # Фіксований формат А5 для варіанта "Для телефону", А4 для інших
         if layout_key == "phone":
-            phone_w = 108 * 2.834
-            top_margin = 10
-            bottomMargin = 14
-            left_margin = right_margin = 10
-            phone_h = (phone_card_height * 3) + 75
-            page_size = (phone_w, phone_h)
-            doc_width = phone_w - (left_margin + right_margin)
+            page_size = A5
+            left_margin = right_margin = 16
+            top_margin = 16
+            bottomMargin = 18
+            doc_width = page_size[0] - (left_margin + right_margin)
         else:
             page_size = A4
             left_margin = right_margin = 25
@@ -1878,7 +2042,7 @@ class ZeoGraceApp(QMainWindow):
 
         elements = []
 
-        title_font_size = 13 if layout_key == "phone" else 15
+        title_font_size = 14 if layout_key == "phone" else 15
         title_style = ParagraphStyle(
             name="ReportTitle",
             parent=styles["Heading1"],
@@ -1901,7 +2065,7 @@ class ZeoGraceApp(QMainWindow):
             name="ReportFilter",
             parent=styles["Normal"],
             fontName=self.pdf_font,
-            fontSize=6.5 if layout_key == "phone" else 7.5,
+            fontSize=6.8 if layout_key == "phone" else 7.5,
             leading=9.5,
             textColor=style_cfg["filter_text_color"]
         )
@@ -1990,17 +2154,17 @@ class ZeoGraceApp(QMainWindow):
                 ]))
                 elements.append(cards_grid)
 
-        # 2. Варіант "Для телефону"
+        # 2. Варіант "Для телефону" (фіксований формат А5, ширина фото від висоти)
         elif layout_key == "phone":
             card_w = doc_width
-            card_photo_max_h = max(70, phone_card_height - 12)
-            # Ширина фото розраховується динамічно від висоти (пропорція 3:4 портрет), не більше 45% ширини картки
-            card_photo_max_w = min(card_w * 0.45, card_photo_max_h * 0.78)
-            info_w = card_w - card_photo_max_w - 6
+            card_photo_max_h = max(60, phone_card_height - 14)
+            # Ширина фото розраховується від висоти, не більше ніж 48% картки
+            card_photo_max_w = min(card_w * 0.48, card_photo_max_h * 0.78)
+            info_w = card_w - card_photo_max_w - 8
 
-            font_scale = max(0.85, min(1.35, phone_card_height / 150.0))
-            base_font_sz = 6.8 * font_scale
-            title_font_sz = 8.2 * font_scale
+            font_scale = max(0.85, min(1.30, phone_card_height / 150.0))
+            base_font_sz = 7.0 * font_scale
+            title_font_sz = 8.6 * font_scale
 
             phone_text_style = ParagraphStyle(
                 name="CardPhoneText",
@@ -2038,15 +2202,16 @@ class ZeoGraceApp(QMainWindow):
                     ("BOX", (0, 0), (-1, -1), 0.5, style_cfg["card_border"]),
                     ("VALIGN", (0, 0), (-1, -1), "TOP"),
                     ("ALIGN", (0, 0), (0, 0), "CENTER"),
-                    ("TOPPADDING", (0, 0), (-1, -1), 3),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 3),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
                 ]))
 
                 elements.append(card_table)
-                elements.append(Spacer(1, 3))
+                elements.append(Spacer(1, 4))
 
+                # По 3 картки на сторінку А5
                 if idx % 3 == 0 and idx < len(records):
                     elements.append(PageBreak())
 
@@ -2119,69 +2284,6 @@ class ZeoGraceApp(QMainWindow):
 
         doc.build(elements, canvasmaker=canvas_factory)
 
-    def render_pdf_first_page_image(self, layout_key, style_key, phone_card_height=150):
-        """Генерує 1-шу сторінку PDF і рендерить її в QImage для попереднього перегляду."""
-        temp_fd, temp_pdf_path = tempfile.mkstemp(suffix=".pdf")
-        os.close(temp_fd)
-
-        try:
-            self.build_pdf_document(
-                temp_pdf_path,
-                layout_key=layout_key,
-                style_key=style_key,
-                phone_card_height=phone_card_height,
-                first_page_only=True
-            )
-
-            # 1. Спроба через PyQt6.QtPdf (вбудована в Qt6)
-            if HAS_QT_PDF:
-                pdf_doc = QPdfDocument()
-                pdf_doc.load(temp_pdf_path)
-                if pdf_doc.pageCount() > 0:
-                    page_size = pdf_doc.pagePointSize(0)
-                    render_w = int(page_size.width() * 1.5)
-                    render_h = int(page_size.height() * 1.5)
-                    qimage = pdf_doc.render(0, QSize(render_w, render_h))
-                    return qimage
-
-            # 2. Спроба через pymupdf (fitz), якщо встановлений
-            try:
-                import fitz
-                doc_mupdf = fitz.open(temp_pdf_path)
-                if len(doc_mupdf) > 0:
-                    page = doc_mupdf[0]
-                    pix = page.get_pixmap(dpi=120)
-                    img_bytes = pix.tobytes("ppm")
-                    qimage = QImage.fromData(img_bytes)
-                    return qimage
-            except ImportError:
-                pass
-
-            # 3. Спроба через pypdfium2, якщо встановлений
-            try:
-                import pypdfium2 as pdfium
-                pdf = pdfium.PdfDocument(temp_pdf_path)
-                if len(pdf) > 0:
-                    page = pdf[0]
-                    pil_image = page.render(scale=1.5).to_pil()
-                    buf = io.BytesIO()
-                    pil_image.save(buf, format="PNG")
-                    qimage = QImage.fromData(buf.getvalue())
-                    return qimage
-            except ImportError:
-                pass
-
-        except Exception:
-            pass
-        finally:
-            if os.path.exists(temp_pdf_path):
-                try:
-                    os.remove(temp_pdf_path)
-                except OSError:
-                    pass
-
-        return None
-
     def export_to_pdf(self):
         style_dlg = PdfExportStyleDialog(
             self,
@@ -2209,7 +2311,7 @@ class ZeoGraceApp(QMainWindow):
         db_base_name = os.path.splitext(os.path.basename(self.db_path))[0]
         layout_name_slug = {
             "a4_cards": "A4",
-            "phone": "Phone",
+            "phone": "Phone_A5",
             "compact": "Compact"
         }.get(chosen_layout_key, "Report")
 
