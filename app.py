@@ -1000,6 +1000,8 @@ class ZeoGraceApp(QMainWindow):
         self.filter_info_label.setWordWrap(True)
         self.filter_info_label.setStyleSheet("border: none; background: transparent; font-size: 11px;")
         filter_box_layout.addWidget(self.filter_info_label, 1)
+        # Задаємо висоту панелі, що відповідає стандартній висоті кнопки разом із відступами
+        filter_box.setFixedHeight(34)
 
         main_layout.addWidget(filter_box)
 
@@ -1560,6 +1562,20 @@ class ZeoGraceApp(QMainWindow):
         )
 
         elements.append(Paragraph("Звіт списку громади", title_style))
+        # Отримуємо та додаємо поточні активні фільтри, якщо вони є
+        filter_descs = self._get_filter_descriptions()
+        if filter_descs:
+            filter_text = "<b>Активні фільтри:</b> " + " | ".join(filter_descs)
+            filter_style = ParagraphStyle(
+                name="ReportFilter",
+                parent=styles["Normal"],
+                fontName=self.pdf_font,
+                fontSize=9,
+                leading=12,
+                textColor=colors.HexColor("#475569"),
+                spaceAfter=10
+            )
+            elements.append(Paragraph(filter_text, filter_style))
 
         # Експортуємо видимі користувачем колонки
         visible_cols_meta = [col for col in ALL_COLUMNS if col[0] in self.visible_columns and col[0] != "id"]
