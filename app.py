@@ -12,7 +12,8 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTableWidget, QTableWidgetItem, QPushButton, QLineEdit, QLabel,
     QFileDialog, QMessageBox, QHeaderView, QSplitter, QDialog,
-    QFormLayout, QTextEdit, QDateEdit, QDialogButtonBox
+    QFormLayout, QTextEdit, QDateEdit, QDialogButtonBox, QComboBox,
+    QSpinBox, QCheckBox
 )
 
 from reportlab.lib.pagesizes import A4
@@ -91,12 +92,25 @@ class NumberedCanvas(canvas.Canvas):
 
 class PersonDialog(QDialog):
     """Діалогове вікно для додавання або редагування запису парафіянина."""
-    def __init__(self, parent=None, person_data=None):
+    def __init__(self, parent=None, person_data=None, db_path=None):
         super().__init__(parent)
         self.person_data = person_data
+        self.db_path = db_path
         self.setWindowTitle("Редагувати запис" if person_data else "Додати запис")
-        self.resize(450, 420)
+        self.resize(550, 600)
         self.init_ui()
+
+    def _load_combobox_data(self, table_name):
+        items = []
+        if self.db_path and os.path.exists(self.db_path):
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    cur = conn.cursor()
+                    cur.execute(f"SELECT id, list_name FROM {table_name} ORDER BY id ASC")
+                    items = cur.fetchall()
+            except Exception:
+                pass
+        return items
 
     def init_ui(self):
         layout = QVBoxLayout(self)
@@ -132,8 +146,36 @@ class PersonDialog(QDialog):
         self.edit_bapt = QLineEdit()
         self.edit_bapt.setPlaceholderText("РРРР-ММ-ДД")
 
-        self.edit_phone = QLineEdit()
+        self.combo_gender = QComboBox()
+        self.combo_gender.addItem("— Не вказано —", 0)
+        genders = self._load_combobox_data("list_gender")
+        for gid, gname in genders:
+            self.combo_gender.addItem(gname, gid)
+
+        self.combo_fam_status = QComboBox()
+        self.combo_fam_status.addItem("— Не вказано —", 0)
+        fam_statuses = self._load_combobox_data("list_family_status")
+        for fid, fname in fam_statuses:
+            self.combo_fam_status.addItem(fname, fid)
+
+        self.combo_church_status = QComboBox()
+        self.combo_church_status.addItem("— Не вказано —", 0)
+        church_statuses = self._load_combobox_data("list_church_status")
+        for cid, cname in church_statuses:
+            self.combo_church_status.addItem(cname, cid)
+
+        self.spin_children = QSpinBox()
+        self.spin_children.setRange(0, 50)
+
+        self.edit_mobile = QLineEdit()
+        self.edit_mobile_a = QLineEdit()
+        self.edit_home_phone = QLineEdit()
+        self.edit_work_phone = QLineEdit()
         self.edit_email = QLineEdit()
+
+        self.check_send_bd_sms = QCheckBox("Надсилати привітання до ДН через SMS")
+        self.check_send_bd_sms.setChecked(True)
+
         self.edit_notes = QTextEdit()
         self.edit_notes.setMaximumHeight(80)
 
@@ -141,8 +183,16 @@ class PersonDialog(QDialog):
         form_layout.addRow("Адреса:", self.edit_address)
         form_layout.addRow("Дата народження:", dob_box)
         form_layout.addRow("Дата хрещення:", self.edit_bapt)
-        form_layout.addRow("Мобільний телефон:", self.edit_phone)
+        form_layout.addRow("Стать:", self.combo_gender)
+        form_layout.addRow("Сімейний стан:", self.combo_fam_status)
+        form_layout.addRow("Статус у церкві:", self.combo_church_status)
+        form_layout.addRow("Кількість дітей:", self.spin_children)
+        form_layout.addRow("Мобільний телефон:", self.edit_mobile)
+        form_layout.addRow("Мобільний (додатковий):", self.edit_mobile_a)
+        form_layout.addRow("Домашній телефон:", self.edit_home_phone)
+        form_layout.addRow("Робочий телефон:", self.edit_work_phone)
         form_layout.addRow("Email:", self.edit_email)
+        form_layout.addRow("SMS сповіщення:", self.check_send_bd_sms)
         form_layout.addRow("Примітки:", self.edit_notes)
 
         layout.addLayout(form_layout)
@@ -155,10 +205,10 @@ class PersonDialog(QDialog):
         layout.addWidget(button_box)
 
         if self.person_data:
-            self.edit_name.setText(self.person_data.get("name", ""))
-            self.edit_address.setText(self.person_data.get("address", ""))
-            dob_val = self.person_data.get("Date_of_Birth", "")
-            if dob_val:
+            self.edit_name.setText(self.person_data.get("name", "") or "")
+            self.edit_address.setText(self.person_data.get("address", "") or "")
+            dob_val = str(self.person_data.get("Date_of_Birth", "") or "")
+            if dob_val and dob_val != "1898":  # Запобігання артефакту 1900-1-1
                 try:
                     qdate = QDate.fromString(dob_val[:10], "yyyy-MM-dd")
                     if qdate.isValid():
@@ -171,9 +221,28 @@ class PersonDialog(QDialog):
             else:
                 clear_dob()
 
-            self.edit_bapt.setText(self.person_data.get("Date_of_Bapt", "") or "")
-            self.edit_phone.setText(str(self.person_data.get("Mobile_Phone", "") or ""))
+            self.edit_bapt.setText(str(self.person_data.get("Date_of_Bapt", "") or ""))
+
+            gender_idx = self.combo_gender.findData(self.person_data.get("gender", 0))
+            if gender_idx >= 0:
+                self.combo_gender.setCurrentIndex(gender_idx)
+
+            fam_idx = self.combo_fam_status.findData(self.person_data.get("fam_status", 0))
+            if fam_idx >= 0:
+                self.combo_fam_status.setCurrentIndex(fam_idx)
+
+            church_idx = self.combo_church_status.findData(self.person_data.get("church_status", 0))
+            if church_idx >= 0:
+                self.combo_church_status.setCurrentIndex(church_idx)
+
+            self.spin_children.setValue(int(self.person_data.get("children") or 0))
+
+            self.edit_mobile.setText(str(self.person_data.get("Mobile_Phone", "") or ""))
+            self.edit_mobile_a.setText(str(self.person_data.get("Mobile_Phone_a", "") or ""))
+            self.edit_home_phone.setText(str(self.person_data.get("Home_phone", "") or ""))
+            self.edit_work_phone.setText(str(self.person_data.get("Work_phone", "") or ""))
             self.edit_email.setText(self.person_data.get("email", "") or "")
+            self.check_send_bd_sms.setChecked(bool(self.person_data.get("send_bd_sms", 1)))
             self.edit_notes.setPlainText(self.person_data.get("notes", "") or "")
         else:
             clear_dob()
@@ -189,11 +258,19 @@ class PersonDialog(QDialog):
         return {
             "name": self.edit_name.text().strip(),
             "address": self.edit_address.text().strip(),
+            "Home_phone": self.edit_home_phone.text().strip(),
+            "Work_phone": self.edit_work_phone.text().strip(),
+            "Mobile_Phone": self.edit_mobile.text().strip(),
             "Date_of_Birth": dob_str,
+            "gender": self.combo_gender.currentData() or 0,
+            "fam_status": self.combo_fam_status.currentData() or 0,
+            "children": self.spin_children.value(),
+            "notes": self.edit_notes.toPlainText().strip(),
+            "church_status": self.combo_church_status.currentData() or 0,
             "Date_of_Bapt": self.edit_bapt.text().strip(),
-            "Mobile_Phone": self.edit_phone.text().strip(),
+            "Mobile_Phone_a": self.edit_mobile_a.text().strip(),
             "email": self.edit_email.text().strip(),
-            "notes": self.edit_notes.toPlainText().strip()
+            "send_bd_sms": 1 if self.check_send_bd_sms.isChecked() else 0
         }
 
 
@@ -218,29 +295,136 @@ class ZeoGraceApp(QMainWindow):
     # --- База даних і бекап ---
 
     def init_db(self):
-        """Ініціалізація структури БД."""
+        """Ініціалізація повної структури БД за schema2026-04-23v3.sql."""
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
-            cur.execute("""
+            cur.executescript("""
+                PRAGMA foreign_keys = ON;
+
+                CREATE TABLE IF NOT EXISTS app_users (
+                    id            INTEGER       PRIMARY KEY AUTOINCREMENT,
+                    username      VARCHAR (50)  UNIQUE NOT NULL,
+                    password_hash VARCHAR (255) NOT NULL,
+                    role          VARCHAR (20)  DEFAULT 'editor',
+                    created_at    DATETIME      DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS disabled (
+                    id  INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                    num TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS fsettings_columns_titles (
+                    id               INTEGER   PRIMARY KEY AUTOINCREMENT UNIQUE NOT NULL,
+                    table_name       CHAR (50) NOT NULL,
+                    column_name      TEXT      NOT NULL,
+                    column_title     TEXT,
+                    column_ods_width INTEGER   DEFAULT (20),
+                    column_export    BOOLEAN   DEFAULT false,
+                    list_items_blob  BLOB
+                );
+
+                CREATE TABLE IF NOT EXISTS fsettings_lists (
+                    id              INTEGER   PRIMARY KEY AUTOINCREMENT UNIQUE NOT NULL,
+                    list_name       CHAR (20) NOT NULL,
+                    list_items      TEXT,
+                    list_items_blob BLOB
+                );
+
+                CREATE TABLE IF NOT EXISTS groups (
+                    group_id      INTEGER    PRIMARY KEY AUTOINCREMENT NOT NULL UNIQUE,
+                    group_type    INTEGER    DEFAULT (0),
+                    group_address CHAR (100),
+                    group_notes   TEXT,
+                    group_name    CHAR (50)
+                );
+
+                CREATE TABLE IF NOT EXISTS list_church_status (
+                    id        INTEGER   PRIMARY KEY AUTOINCREMENT UNIQUE NOT NULL,
+                    list_name CHAR (50) NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS list_event_type (
+                    id                        INTEGER   PRIMARY KEY AUTOINCREMENT UNIQUE NOT NULL,
+                    list_name                 CHAR (50) NOT NULL,
+                    event_change_status_table CHAR (50),
+                    event_change_status_id    INTEGER
+                );
+
+                CREATE TABLE IF NOT EXISTS list_family_status (
+                    id        INTEGER   PRIMARY KEY AUTOINCREMENT UNIQUE NOT NULL,
+                    list_name CHAR (50) NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS list_gender (
+                    id        INTEGER   PRIMARY KEY AUTOINCREMENT UNIQUE NOT NULL,
+                    list_name CHAR (50) NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS list_group_status (
+                    id        INTEGER   PRIMARY KEY AUTOINCREMENT UNIQUE NOT NULL,
+                    list_name CHAR (50) NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS list_group_type (
+                    id        INTEGER   PRIMARY KEY AUTOINCREMENT UNIQUE NOT NULL,
+                    list_name CHAR (50) NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS month_names (
+                    id               INTEGER PRIMARY KEY NOT NULL,
+                    month_name_ukr   TEXT    DEFAULT (NULL),
+                    month_name_ukr_r TEXT    DEFAULT (NULL)
+                );
+
                 CREATE TABLE IF NOT EXISTS people (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    address TEXT,
-                    Date_of_Birth TEXT,
-                    Date_of_Bapt TEXT,
-                    Mobile_Phone TEXT,
-                    email TEXT,
-                    notes TEXT
-                )
-            """)
-            cur.execute("""
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name           CHAR    DEFAULT (''),
+                    address        CHAR    DEFAULT (''),
+                    Home_phone     INTEGER DEFAULT (''),
+                    Work_phone     INTEGER DEFAULT (''),
+                    Mobile_Phone   INTEGER DEFAULT (''),
+                    Date_of_Birth  DATE    DEFAULT ('1900-01-01'),
+                    gender         INTEGER DEFAULT (0),
+                    fam_status     INTEGER DEFAULT (0),
+                    children       INTEGER DEFAULT (0),
+                    notes          TEXT    DEFAULT (''),
+                    church_status  INTEGER DEFAULT (0),
+                    Date_of_Bapt   DATE    DEFAULT (''),
+                    Mobile_Phone_a INTEGER DEFAULT (''),
+                    email          CHAR    NOT NULL DEFAULT (''),
+                    send_bd_sms    BOOLEAN DEFAULT (1)
+                );
+
+                CREATE TABLE IF NOT EXISTS p_events (
+                    id        INTEGER PRIMARY KEY NOT NULL,
+                    people_id INTEGER NOT NULL REFERENCES people (id) ON DELETE CASCADE,
+                    eventdate DATE    DEFAULT ('1900-01-01'),
+                    eventtype INTEGER DEFAULT (0),
+                    descr     CHAR
+                );
+
+                CREATE TABLE IF NOT EXISTS people_to_groups (
+                    id        INTEGER PRIMARY KEY AUTOINCREMENT UNIQUE NOT NULL,
+                    people_id INTEGER NOT NULL REFERENCES people (id) ON DELETE CASCADE,
+                    group_id  INTEGER NOT NULL REFERENCES groups (group_id) ON DELETE CASCADE,
+                    role      INTEGER DEFAULT (0)
+                );
+
                 CREATE TABLE IF NOT EXISTS photos (
-                    photo_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    people_id INTEGER,
-                    photo BLOB,
-                    descr TEXT,
-                    FOREIGN KEY (people_id) REFERENCES people(id) ON DELETE CASCADE
-                )
+                    photo_id  INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                    people_id INTEGER NOT NULL REFERENCES people (id) ON DELETE CASCADE,
+                    photo     BLOB,
+                    descr     CHAR
+                );
+
+                CREATE TABLE IF NOT EXISTS user_settings (
+                    user_id       INTEGER,
+                    setting_key   TEXT,
+                    setting_value TEXT,
+                    PRIMARY KEY (user_id, setting_key),
+                    FOREIGN KEY (user_id) REFERENCES app_users (id)
+                );
             """)
             conn.commit()
 
@@ -453,9 +637,9 @@ class ZeoGraceApp(QMainWindow):
         conditions = []
 
         if search_text:
-            conditions.append("(name LIKE ? OR address LIKE ? OR Mobile_Phone LIKE ?)")
+            conditions.append("(name LIKE ? OR address LIKE ? OR Mobile_Phone LIKE ? OR Home_phone LIKE ? OR Work_phone LIKE ?)")
             p = f"%{search_text}%"
-            sql_params.extend([p, p, p])
+            sql_params.extend([p, p, p, p, p])
 
         if query_filter:
             conditions.append(query_filter)
@@ -485,23 +669,28 @@ class ZeoGraceApp(QMainWindow):
 
     def add_person(self):
         """Створення нового запису (Create)."""
-        dlg = PersonDialog(self)
+        dlg = PersonDialog(self, db_path=self.db_path)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             data = dlg.get_data()
             with sqlite3.connect(self.db_path) as conn:
                 cur = conn.cursor()
                 cur.execute("""
-                    INSERT INTO people (name, address, Date_of_Birth, Date_of_Bapt, Mobile_Phone, email, notes)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO people (
+                        name, address, Home_phone, Work_phone, Mobile_Phone,
+                        Date_of_Birth, gender, fam_status, children, notes,
+                        church_status, Date_of_Bapt, Mobile_Phone_a, email, send_bd_sms
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    data["name"], data["address"], data["Date_of_Birth"],
-                    data["Date_of_Bapt"], data["Mobile_Phone"], data["email"], data["notes"]
+                    data["name"], data["address"], data["Home_phone"], data["Work_phone"],
+                    data["Mobile_Phone"], data["Date_of_Birth"], data["gender"], data["fam_status"],
+                    data["children"], data["notes"], data["church_status"], data["Date_of_Bapt"],
+                    data["Mobile_Phone_a"], data["email"], data["send_bd_sms"]
                 ))
                 conn.commit()
                 new_id = cur.lastrowid
 
             self.load_people()
-            # Вибір щойно створеного
             for r in range(self.table.rowCount()):
                 if self.table.item(r, 0).text() == str(new_id):
                     self.table.selectRow(r)
@@ -523,20 +712,23 @@ class ZeoGraceApp(QMainWindow):
             return
 
         person_dict = dict(row)
-        dlg = PersonDialog(self, person_data=person_dict)
+        dlg = PersonDialog(self, person_data=person_dict, db_path=self.db_path)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             data = dlg.get_data()
             with sqlite3.connect(self.db_path) as conn:
                 cur = conn.cursor()
                 cur.execute("""
                     UPDATE people
-                    SET name = ?, address = ?, Date_of_Birth = ?, Date_of_Bapt = ?,
-                        Mobile_Phone = ?, email = ?, notes = ?
+                    SET name = ?, address = ?, Home_phone = ?, Work_phone = ?,
+                        Mobile_Phone = ?, Date_of_Birth = ?, gender = ?, fam_status = ?,
+                        children = ?, notes = ?, church_status = ?, Date_of_Bapt = ?,
+                        Mobile_Phone_a = ?, email = ?, send_bd_sms = ?
                     WHERE id = ?
                 """, (
-                    data["name"], data["address"], data["Date_of_Birth"],
-                    data["Date_of_Bapt"], data["Mobile_Phone"], data["email"],
-                    data["notes"], self.selected_person_id
+                    data["name"], data["address"], data["Home_phone"], data["Work_phone"],
+                    data["Mobile_Phone"], data["Date_of_Birth"], data["gender"], data["fam_status"],
+                    data["children"], data["notes"], data["church_status"], data["Date_of_Bapt"],
+                    data["Mobile_Phone_a"], data["email"], data["send_bd_sms"], self.selected_person_id
                 ))
                 conn.commit()
 
@@ -560,7 +752,7 @@ class ZeoGraceApp(QMainWindow):
             self,
             "Підтвердження видалення",
             f"Ви дійсно бажаєте видалити запис '{name}' (ID: {self.selected_person_id})?\n"
-            "Усі пов'язані фотографії також буде видалено.",
+            "Усі пов'язані фотографії та події також буде видалено.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
