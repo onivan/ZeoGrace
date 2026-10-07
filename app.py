@@ -964,10 +964,6 @@ class ZeoGraceApp(QMainWindow):
         self.search_edit.textChanged.connect(lambda: self.load_people())
         top_bar.addWidget(self.search_edit)
 
-        self.btn_filter_status = QPushButton("Фільтр: Статус...")
-        self.btn_filter_status.clicked.connect(self.open_status_filter)
-        top_bar.addWidget(self.btn_filter_status)
-
         self.btn_this_week = QPushButton("ДН цього тижня")
         self.btn_this_week.clicked.connect(self.filter_bd_this_week)
         top_bar.addWidget(self.btn_this_week)
@@ -986,16 +982,26 @@ class ZeoGraceApp(QMainWindow):
 
         main_layout.addLayout(top_bar)
 
-        # Інформаційний блок поточного активного фільтра
+        # Компактний постійно видимий рядок фільтрів зі статусною кнопкою на початку
+        filter_box = QFrame()
+        filter_box.setFrameShape(QFrame.Shape.StyledPanel)
+        filter_box.setStyleSheet(
+            "QFrame { background-color: #F8FAFC; border: 1px solid #CBD5E1; border-radius: 4px; }"
+        )
+        filter_box_layout = QHBoxLayout(filter_box)
+        filter_box_layout.setContentsMargins(4, 3, 4, 3)
+        filter_box_layout.setSpacing(8)
+
+        self.btn_filter_status = QPushButton("Фільтр: Статус...")
+        self.btn_filter_status.clicked.connect(self.open_status_filter)
+        filter_box_layout.addWidget(self.btn_filter_status)
+
         self.filter_info_label = QLabel()
         self.filter_info_label.setWordWrap(True)
-        self.filter_info_label.setFrameShape(QFrame.Shape.StyledPanel)
-        self.filter_info_label.setStyleSheet(
-            "background-color: #EFF6FF; border: 1px solid #BFDBFE; "
-            "color: #1E3A8A; padding: 5px 8px; border-radius: 4px; font-size: 11px;"
-        )
-        self.filter_info_label.setVisible(False)
-        main_layout.addWidget(self.filter_info_label)
+        self.filter_info_label.setStyleSheet("border: none; background: transparent; font-size: 11px;")
+        filter_box_layout.addWidget(self.filter_info_label, 1)
+
+        main_layout.addWidget(filter_box)
 
         # Панель дій CRUD над записами
         crud_bar = QHBoxLayout()
@@ -1291,9 +1297,8 @@ class ZeoGraceApp(QMainWindow):
 
         if filter_descs:
             self.filter_info_label.setText("🔍 <b>Активні фільтри:</b> " + " | ".join(filter_descs))
-            self.filter_info_label.setVisible(True)
         else:
-            self.filter_info_label.setVisible(False)
+            self.filter_info_label.setText("<span style='color: #64748B;'>Фільтри не застосовано (показано всі записи)</span>")
 
         plain_filter_summary = " [Фільтр активний]" if filter_descs else ""
         self.status_label.setText(f"БД: {os.path.basename(self.db_path)} | Записів знайдено: {len(rows)}{plain_filter_summary}")
