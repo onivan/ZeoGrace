@@ -627,7 +627,7 @@ class ZeoGraceApp(QMainWindow):
 
     # --- Логіка CRUD для people ---
 
-    def load_people(self, *args, query_filter=None, params=None): 
+    def load_people(self, *args, query_filter=None, params=None):
         """Завантаження та фільтрація списку людей."""
         self.table.setRowCount(0)
         sql = "SELECT id, name, address, Date_of_Birth, Date_of_Bapt, Mobile_Phone, email FROM people"
