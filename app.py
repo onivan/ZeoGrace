@@ -13,7 +13,8 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QPushButton, QLineEdit, QLabel,
     QFileDialog, QMessageBox, QHeaderView, QSplitter, QDialog,
     QFormLayout, QTextEdit, QDateEdit, QDialogButtonBox, QComboBox,
-    QSpinBox, QCheckBox, QListWidget, QListWidgetItem
+    QSpinBox, QCheckBox, QListWidget, QListWidgetItem, QGroupBox,
+    QGridLayout
 )
 
 from reportlab.lib.pagesizes import A4
@@ -209,6 +210,225 @@ class ColumnSelectionDialog(QDialog):
         if not selected:
             selected = ["id", "name"]
         return selected
+
+
+class ModalStatusFilterDialog(QDialog):
+    """Діалогове вікно розширеного фільтра за статусами, групами та подіями (аналог TmFstatus)."""
+    def __init__(self, parent=None, db_path=None, initial_state=None):
+        super().__init__(parent)
+        self.db_path = db_path
+        self.initial_state = initial_state or {}
+        self.setWindowTitle("Фільтр: Статус")
+        self.resize(780, 520)
+        self.init_ui()
+
+    def _fill_checklist(self, widget, table_name, checked_ids):
+        widget.clear()
+        if not self.db_path or not os.path.exists(self.db_path):
+            return
+        try:
+            with get_db_connection(self.db_path) as conn:
+                cur = conn.cursor()
+                cur.execute(f"SELECT id, list_name FROM {table_name} ORDER BY id ASC")
+                for row_id, name in cur.fetchall():
+                    item = QListWidgetItem(name)
+                    item.setData(Qt.ItemDataRole.UserRole, row_id)
+                    item.setCheckState(Qt.CheckState.Checked if row_id in checked_ids else Qt.CheckState.Unchecked)
+                    widget.addItem(item)
+        except Exception:
+            pass
+
+    def _get_checked_ids(self, widget):
+        checked = []
+        for idx in range(widget.count()):
+            item = widget.item(idx)
+            if item.checkState() == Qt.CheckState.Checked:
+                checked.append(item.data(Qt.ItemDataRole.UserRole))
+        return checked
+
+    def init_ui(self):
+        main_layout = QVBoxLayout(self)
+
+        # Верхня панель (3 GroupBox: Церковний статус, Стать, Сімейний статус)
+        top_layout = QHBoxLayout()
+
+        gb_church = QGroupBox("Церковний статус")
+        gb_church_lay = QVBoxLayout(gb_church)
+        self.list_church = QListWidget()
+        gb_church_lay.addWidget(self.list_church)
+        top_layout.addWidget(gb_church)
+
+        gb_gender = QGroupBox("Стать")
+        gb_gender_lay = QVBoxLayout(gb_gender)
+        self.list_gender = QListWidget()
+        gb_gender_lay.addWidget(self.list_gender)
+        top_layout.addWidget(gb_gender)
+
+        gb_fam = QGroupBox("Сімейний статус")
+        gb_fam_lay = QVBoxLayout(gb_fam)
+        self.list_fam = QListWidget()
+        gb_fam_lay.addWidget(self.list_fam)
+        top_layout.addWidget(gb_fam)
+
+        main_layout.addLayout(top_layout)
+
+        # Нижня панель (2 GroupBox: Група, Подія)
+        bottom_layout = QHBoxLayout()
+
+        # GroupBox: Група
+        gb_group = QGroupBox("Група")
+        gb_group_lay = QVBoxLayout(gb_group)
+
+        self.list_group_status = QListWidget()
+        self.list_group_status.setFixedHeight(90)
+        gb_group_lay.addWidget(self.list_group_status)
+
+        self.table_groups = QTableWidget()
+        self.table_groups.setColumnCount(3)
+        self.table_groups.setHorizontalHeaderLabels(["g.id", "Назва групи", "Тип групи"])
+        self.table_groups.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table_groups.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table_groups.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table_groups.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        gb_group_lay.addWidget(self.table_groups)
+
+        btn_clear_group = QPushButton("Очистити вибір групи")
+        btn_clear_group.clicked.connect(self.table_groups.clearSelection)
+        gb_group_lay.addWidget(btn_clear_group)
+
+        bottom_layout.addWidget(gb_group, 4)
+
+        # GroupBox: Подія
+        gb_event = QGroupBox("Подія")
+        gb_event_lay = QHBoxLayout(gb_event)
+
+        self.list_event_type = QListWidget()
+        gb_event_lay.addWidget(self.list_event_type, 3)
+
+        dates_box = QVBoxLayout()
+        form_dates = QFormLayout()
+
+        self.date_from = QDateEdit()
+        self.date_from.setCalendarPopup(True)
+        self.date_from.setDisplayFormat("yyyy-MM-dd")
+        self.date_from.setDate(QDate.currentDate().addYears(-1))
+
+        self.date_to = QDateEdit()
+        self.date_to.setCalendarPopup(True)
+        self.date_to.setDisplayFormat("yyyy-MM-dd")
+        self.date_to.setDate(QDate.currentDate())
+
+        self.check_enable_dates = QCheckBox("Враховувати діапазон дат")
+        self.check_enable_dates.setChecked(False)
+
+        form_dates.addRow("з:", self.date_from)
+        form_dates.addRow("до:", self.date_to)
+        dates_box.addWidget(self.check_enable_dates)
+        dates_box.addLayout(form_dates)
+        dates_box.addStretch()
+
+        gb_event_lay.addLayout(dates_box, 2)
+        bottom_layout.addWidget(gb_event, 5)
+
+        main_layout.addLayout(bottom_layout)
+
+        # Завантаження даних
+        st = self.initial_state
+        self._fill_checklist(self.list_church, "list_church_status", st.get("church_status", []))
+        self._fill_checklist(self.list_gender, "list_gender", st.get("gender", []))
+        self._fill_checklist(self.list_fam, "list_family_status", st.get("family_status", []))
+        self._fill_checklist(self.list_group_status, "list_group_status", st.get("group_status", []))
+        self._fill_checklist(self.list_event_type, "list_event_type", st.get("event_type", []))
+
+        if st.get("date_from"):
+            self.date_from.setDate(QDate.fromString(st["date_from"], "yyyy-MM-dd"))
+        if st.get("date_to"):
+            self.date_to.setDate(QDate.fromString(st["date_to"], "yyyy-MM-dd"))
+        self.check_enable_dates.setChecked(bool(st.get("enable_dates", False)))
+
+        self._load_groups_table(st.get("group_id", None))
+
+        # Нижні кнопки керування (OK / Відмінити / Скинути все)
+        btn_bar = QHBoxLayout()
+        btn_clear_all = QPushButton("Скинути всі фільтри")
+        btn_clear_all.clicked.connect(self.clear_all_filters)
+        btn_bar.addWidget(btn_clear_all)
+        btn_bar.addStretch()
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Відмінити")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        btn_bar.addWidget(buttons)
+
+        main_layout.addLayout(btn_bar)
+
+    def _load_groups_table(self, selected_group_id):
+        self.table_groups.setRowCount(0)
+        if not self.db_path or not os.path.exists(self.db_path):
+            return
+
+        type_map = {}
+        try:
+            with get_db_connection(self.db_path) as conn:
+                cur = conn.cursor()
+                try:
+                    cur.execute("SELECT id, list_name FROM list_group_type")
+                    type_map = dict(cur.fetchall())
+                except Exception:
+                    pass
+
+                cur.execute("SELECT group_id, group_name, group_type FROM groups ORDER BY group_name ASC")
+                rows = cur.fetchall()
+
+            self.table_groups.setRowCount(len(rows))
+            sel_row = -1
+            for r_idx, (gid, gname, gtype) in enumerate(rows):
+                self.table_groups.setItem(r_idx, 0, QTableWidgetItem(str(gid)))
+                self.table_groups.setItem(r_idx, 1, QTableWidgetItem(str(gname or "")))
+                self.table_groups.setItem(r_idx, 2, QTableWidgetItem(str(type_map.get(gtype, gtype or ""))))
+
+                for col in range(3):
+                    self.table_groups.item(r_idx, col).setFlags(self.table_groups.item(r_idx, col).flags() & ~Qt.ItemFlag.ItemIsEditable)
+
+                if selected_group_id is not None and gid == selected_group_id:
+                    sel_row = r_idx
+
+            if sel_row >= 0:
+                self.table_groups.selectRow(sel_row)
+        except Exception:
+            pass
+
+    def clear_all_filters(self):
+        for w in [self.list_church, self.list_gender, self.list_fam, self.list_group_status, self.list_event_type]:
+            for idx in range(w.count()):
+                w.item(idx).setCheckState(Qt.CheckState.Unchecked)
+        self.table_groups.clearSelection()
+        self.check_enable_dates.setChecked(False)
+
+    def get_filter_state(self):
+        selected_gid = None
+        selected_gname = ""
+        sel_items = self.table_groups.selectedItems()
+        if sel_items:
+            row = sel_items[0].row()
+            selected_gid = int(self.table_groups.item(row, 0).text())
+            selected_gname = self.table_groups.item(row, 1).text()
+
+        return {
+            "church_status": self._get_checked_ids(self.list_church),
+            "gender": self._get_checked_ids(self.list_gender),
+            "family_status": self._get_checked_ids(self.list_fam),
+            "group_status": self._get_checked_ids(self.list_group_status),
+            "group_id": selected_gid,
+            "group_name": selected_gname,
+            "event_type": self._get_checked_ids(self.list_event_type),
+            "enable_dates": self.check_enable_dates.isChecked(),
+            "date_from": self.date_from.date().toString("yyyy-MM-dd"),
+            "date_to": self.date_to.date().toString("yyyy-MM-dd")
+        }
 
 
 class PersonDialog(QDialog):
@@ -422,6 +642,7 @@ class ZeoGraceApp(QMainWindow):
         else:
             self.visible_columns = list(DEFAULT_VISIBLE_COLUMNS)
 
+        self.status_filter_state = {}
         self.current_photo_id = None
         self.pdf_font = register_unicode_font()
 
@@ -606,6 +827,7 @@ class ZeoGraceApp(QMainWindow):
 
         self.db_path = file_path
         self.settings.setValue("last_db_path", self.db_path)
+        self.status_filter_state = {}
         self.init_db()
         self.backup_database()
         self.selected_person_id = None
@@ -704,6 +926,11 @@ class ZeoGraceApp(QMainWindow):
         act_delete.triggered.connect(self.delete_person)
         person_menu.addAction(act_delete)
 
+        person_menu.addSeparator()
+        act_status_filter = QAction("Фільтр: &Статус...", self)
+        act_status_filter.triggered.connect(self.open_status_filter)
+        person_menu.addAction(act_status_filter)
+
         # Меню вигляду
         view_menu = menu_bar.addMenu("&Вигляд")
         act_columns = QAction("Налаштувати &колонки...", self)
@@ -726,6 +953,10 @@ class ZeoGraceApp(QMainWindow):
         self.search_edit.setPlaceholderText("Пошук за ім'ям, адресою або телефоном...")
         self.search_edit.textChanged.connect(lambda: self.load_people())
         top_bar.addWidget(self.search_edit)
+
+        btn_filter_status = QPushButton("Фільтр: Статус...")
+        btn_filter_status.clicked.connect(self.open_status_filter)
+        top_bar.addWidget(btn_filter_status)
 
         btn_this_week = QPushButton("ДН цього тижня")
         btn_this_week.clicked.connect(self.filter_bd_this_week)
@@ -828,6 +1059,13 @@ class ZeoGraceApp(QMainWindow):
             self.settings.setValue("visible_columns", self.visible_columns)
             self.apply_column_visibility()
 
+    def open_status_filter(self):
+        """Відкриває діалог фільтра статусу за зразком modalstatus."""
+        dlg = ModalStatusFilterDialog(self, db_path=self.db_path, initial_state=self.status_filter_state)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.status_filter_state = dlg.get_filter_state()
+            self.load_people()
+
     # --- Логіка CRUD для people ---
 
     def load_people(self, *args, query_filter=None, params=None):
@@ -876,6 +1114,44 @@ class ZeoGraceApp(QMainWindow):
             conditions.append(query_filter)
             if params:
                 sql_params.extend(params)
+
+        # Застосування статус-фільтрів (modalstatus)
+        st = self.status_filter_state
+        if st.get("church_status"):
+            placeholders = ",".join("?" * len(st["church_status"]))
+            conditions.append(f"church_status IN ({placeholders})")
+            sql_params.extend(st["church_status"])
+
+        if st.get("gender"):
+            placeholders = ",".join("?" * len(st["gender"]))
+            conditions.append(f"gender IN ({placeholders})")
+            sql_params.extend(st["gender"])
+
+        if st.get("family_status"):
+            placeholders = ",".join("?" * len(st["family_status"]))
+            conditions.append(f"fam_status IN ({placeholders})")
+            sql_params.extend(st["family_status"])
+
+        if st.get("group_id"):
+            conditions.append("id IN (SELECT people_id FROM people_to_groups WHERE group_id = ?)")
+            sql_params.append(st["group_id"])
+
+        if st.get("group_status"):
+            placeholders = ",".join("?" * len(st["group_status"]))
+            conditions.append(f"id IN (SELECT people_id FROM people_to_groups WHERE role IN ({placeholders}))")
+            sql_params.extend(st["group_status"])
+
+        if st.get("event_type") or st.get("enable_dates"):
+            event_subquery = "id IN (SELECT people_id FROM p_events WHERE 1=1"
+            if st.get("event_type"):
+                placeholders = ",".join("?" * len(st["event_type"]))
+                event_subquery += f" AND eventtype IN ({placeholders})"
+                sql_params.extend(st["event_type"])
+            if st.get("enable_dates"):
+                event_subquery += " AND eventdate >= ? AND eventdate <= ?"
+                sql_params.extend([st.get("date_from", "1900-01-01"), st.get("date_to", "2999-12-31")])
+            event_subquery += ")"
+            conditions.append(event_subquery)
 
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
@@ -930,7 +1206,14 @@ class ZeoGraceApp(QMainWindow):
             self.photo_label.clear()
             self.photo_label.setText("Немає фото")
 
-        self.status_label.setText(f"БД: {os.path.basename(self.db_path)} | Записів знайдено: {len(rows)}")
+        filter_info = []
+        if self.status_filter_state.get("group_name"):
+            filter_info.append(f"Група: {self.status_filter_state['group_name']}")
+        if any(self.status_filter_state.get(k) for k in ["church_status", "gender", "family_status", "group_status", "event_type"]):
+            filter_info.append("Активний статус-фільтр")
+
+        info_str = f" | {', '.join(filter_info)}" if filter_info else ""
+        self.status_label.setText(f"БД: {os.path.basename(self.db_path)} | Записів знайдено: {len(rows)}{info_str}")
 
     def add_person(self):
         """Створення нового запису (Create)."""
@@ -1036,6 +1319,7 @@ class ZeoGraceApp(QMainWindow):
 
     def reset_filter(self):
         self.search_edit.clear()
+        self.status_filter_state = {}
         self.load_people()
 
     def on_person_selected(self):
