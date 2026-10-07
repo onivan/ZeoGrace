@@ -25,6 +25,41 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
 
+UKRAINIAN_ALPHABET = "абвгґдеєжзиіїйклмнопрстуфхцчшщьюя"
+UKRAINIAN_ORDER = {char: idx for idx, char in enumerate(UKRAINIAN_ALPHABET)}
+
+
+def ukrainian_sort_key(s: str):
+    """Генерує ключ сортування відповідно до українського алфавіту."""
+    if not s:
+        return []
+    key = []
+    for ch in str(s).lower():
+        if ch in UKRAINIAN_ORDER:
+            key.append((0, UKRAINIAN_ORDER[ch]))
+        else:
+            key.append((1, ord(ch)))
+    return key
+
+
+def ukrainian_collation(str1: str, str2: str) -> int:
+    """Collation-функція для SQLite для українського сортування."""
+    k1 = ukrainian_sort_key(str1)
+    k2 = ukrainian_sort_key(str2)
+    if k1 < k2:
+        return -1
+    elif k1 > k2:
+        return 1
+    return 0
+
+
+def get_db_connection(db_path: str) -> sqlite3.Connection:
+    """Створює підключення до SQLite з зареєстрованою функцією сортування."""
+    conn = sqlite3.connect(db_path)
+    conn.create_collation("UKRAINIAN", ukrainian_collation)
+    return conn
+
+
 def register_unicode_font() -> str:
     """Знаходить та реєструє TTF-шрифт з підтримкою кирилиці для Linux, Windows та macOS."""
     font_candidates = [
@@ -104,7 +139,7 @@ class PersonDialog(QDialog):
         items = []
         if self.db_path and os.path.exists(self.db_path):
             try:
-                with sqlite3.connect(self.db_path) as conn:
+                with get_db_connection(self.db_path) as conn:
                     cur = conn.cursor()
                     cur.execute(f"SELECT id, list_name FROM {table_name} ORDER BY id ASC")
                     items = cur.fetchall()
@@ -307,7 +342,7 @@ class ZeoGraceApp(QMainWindow):
 
     def init_db(self):
         """Ініціалізація повної структури БД за schema2026-04-23v3.sql."""
-        with sqlite3.connect(self.db_path) as conn:
+        with get_db_connection(self.db_path) as conn:
             cur = conn.cursor()
             cur.executescript("""
                 PRAGMA foreign_keys = ON;
@@ -647,7 +682,7 @@ class ZeoGraceApp(QMainWindow):
     # --- Логіка CRUD для people ---
 
     def load_people(self, *args, query_filter=None, params=None):
-        """Завантаження та фільтрація списку людей."""
+        """Завантаження та фільтрація списку людей з українським сортуванням."""
         target_person_id = self.selected_person_id
 
         self.table.blockSignals(True)
@@ -671,12 +706,14 @@ class ZeoGraceApp(QMainWindow):
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
 
-        sql += " ORDER BY name ASC"
+        sql += " ORDER BY name COLLATE UKRAINIAN ASC"
 
-        with sqlite3.connect(self.db_path) as conn:
+        with get_db_connection(self.db_path) as conn:
             cur = conn.cursor()
             cur.execute(sql, sql_params)
             rows = cur.fetchall()
+
+        rows.sort(key=lambda r: ukrainian_sort_key(r[1]))
 
         self.table.setRowCount(len(rows))
         target_row = None
@@ -715,7 +752,7 @@ class ZeoGraceApp(QMainWindow):
         dlg = PersonDialog(self, db_path=self.db_path)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             data = dlg.get_data()
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 cur = conn.cursor()
                 cur.execute("""
                     INSERT INTO people (
@@ -742,7 +779,7 @@ class ZeoGraceApp(QMainWindow):
             QMessageBox.warning(self, "Увага", "Оберіть запис для редагування!")
             return
 
-        with sqlite3.connect(self.db_path) as conn:
+        with get_db_connection(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
             cur.execute("SELECT * FROM people WHERE id = ?", (self.selected_person_id,))
@@ -755,7 +792,7 @@ class ZeoGraceApp(QMainWindow):
         dlg = PersonDialog(self, person_data=person_dict, db_path=self.db_path)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             data = dlg.get_data()
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 cur = conn.cursor()
                 cur.execute("""
                     UPDATE people
@@ -793,7 +830,7 @@ class ZeoGraceApp(QMainWindow):
         )
 
         if reply == QMessageBox.StandardButton.Yes:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 cur = conn.cursor()
                 cur.execute("PRAGMA foreign_keys = ON")
                 cur.execute("DELETE FROM photos WHERE people_id = ?", (self.selected_person_id,))
@@ -832,7 +869,7 @@ class ZeoGraceApp(QMainWindow):
     # --- Робота із зображеннями (CRUD для photos) ---
 
     def display_photo(self, people_id):
-        with sqlite3.connect(self.db_path) as conn:
+        with get_db_connection(self.db_path) as conn:
             cur = conn.cursor()
             cur.execute("SELECT photo_id, photo FROM photos WHERE people_id = ? ORDER BY photo_id DESC LIMIT 1", (people_id,))
             res = cur.fetchone()
@@ -869,7 +906,7 @@ class ZeoGraceApp(QMainWindow):
             img.save(buffer, format="JPEG", quality=85)
             photo_bytes = buffer.getvalue()
 
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 cur = conn.cursor()
                 cur.execute("INSERT INTO photos (people_id, photo) VALUES (?, ?)", (self.selected_person_id, photo_bytes))
                 conn.commit()
@@ -888,7 +925,7 @@ class ZeoGraceApp(QMainWindow):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         if reply == QMessageBox.StandardButton.Yes:
-            with sqlite3.connect(self.db_path) as conn:
+            with get_db_connection(self.db_path) as conn:
                 cur = conn.cursor()
                 cur.execute("DELETE FROM photos WHERE photo_id = ?", (self.current_photo_id,))
                 conn.commit()
@@ -899,7 +936,7 @@ class ZeoGraceApp(QMainWindow):
         if not self.selected_person_id:
             return
 
-        with sqlite3.connect(self.db_path) as conn:
+        with get_db_connection(self.db_path) as conn:
             cur = conn.cursor()
             cur.execute("SELECT photo FROM photos WHERE people_id = ? ORDER BY photo_id DESC LIMIT 1", (self.selected_person_id,))
             res = cur.fetchone()
@@ -967,7 +1004,7 @@ class ZeoGraceApp(QMainWindow):
         headers = ["Фото", "Ім'я", "Адреса", "Дата нар.", "Мобільний", "Email"]
         table_data = [[Paragraph(h, header_style) for h in headers]]
 
-        with sqlite3.connect(self.db_path) as conn:
+        with get_db_connection(self.db_path) as conn:
             cur = conn.cursor()
             for row_idx in range(self.table.rowCount()):
                 p_id = int(self.table.item(row_idx, 0).text())
