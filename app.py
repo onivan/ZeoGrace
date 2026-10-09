@@ -15,7 +15,8 @@ from PyQt6.QtWidgets import (
     QFileDialog, QMessageBox, QHeaderView, QSplitter, QDialog,
     QFormLayout, QTextEdit, QDateEdit, QDialogButtonBox, QComboBox,
     QSpinBox, QCheckBox, QListWidget, QListWidgetItem, QGroupBox,
-    QGridLayout, QFrame, QRadioButton, QButtonGroup, QProgressDialog
+    QGridLayout, QFrame, QRadioButton, QButtonGroup, QProgressDialog,
+    QTabWidget
 )
 
 from reportlab.lib.pagesizes import A4, A5
@@ -892,14 +893,76 @@ class ModalStatusFilterDialog(QDialog):
         }
 
 
+class EventDialog(QDialog):
+    """Діалогове вікно для додавання або редагування події."""
+    def __init__(self, parent=None, db_path=None, event_data=None):
+        super().__init__(parent)
+        self.db_path = db_path
+        self.event_data = event_data
+        self.setWindowTitle("Редагувати подію" if event_data else "Додати подію")
+        self.resize(400, 200)
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QFormLayout(self)
+
+        self.edit_date = QDateEdit()
+        self.edit_date.setCalendarPopup(True)
+        self.edit_date.setDisplayFormat("yyyy-MM-dd")
+        self.edit_date.setDate(QDate.currentDate())
+
+        self.combo_type = QComboBox()
+        if self.db_path and os.path.exists(self.db_path):
+            try:
+                with get_db_connection(self.db_path) as conn:
+                    cur = conn.cursor()
+                    cur.execute("SELECT id, list_name FROM list_event_type ORDER BY id ASC")
+                    for eid, ename in cur.fetchall():
+                        self.combo_type.addItem(ename, eid)
+            except Exception:
+                pass
+
+        self.edit_descr = QLineEdit()
+
+        layout.addRow("Дата події:", self.edit_date)
+        layout.addRow("Тип події:", self.combo_type)
+        layout.addRow("Опис:", self.edit_descr)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        if self.event_data:
+            qdate = QDate.fromString(str(self.event_data.get("eventdate", ""))[:10], "yyyy-MM-dd")
+            if qdate.isValid():
+                self.edit_date.setDate(qdate)
+
+            idx = self.combo_type.findData(self.event_data.get("eventtype", 0))
+            if idx >= 0:
+                self.combo_type.setCurrentIndex(idx)
+
+            self.edit_descr.setText(str(self.event_data.get("descr", "") or ""))
+
+    def get_data(self):
+        return {
+            "id": self.event_data.get("id") if self.event_data else None,
+            "eventdate": self.edit_date.date().toString("yyyy-MM-dd"),
+            "eventtype": self.combo_type.currentData() or 0,
+            "eventtype_name": self.combo_type.currentText(),
+            "descr": self.edit_descr.text().strip()
+        }
+
+
 class PersonDialog(QDialog):
     """Діалогове вікно для додавання або редагування запису парафіянина."""
     def __init__(self, parent=None, person_data=None, db_path=None):
         super().__init__(parent)
         self.person_data = person_data
         self.db_path = db_path
+        self.events_to_delete = []
         self.setWindowTitle("Редагувати запис" if person_data else "Додати запис")
-        self.resize(550, 600)
+        self.resize(600, 650)
         self.init_ui()
 
     def _load_combobox_data(self, table_name):
@@ -915,8 +978,14 @@ class PersonDialog(QDialog):
         return items
 
     def init_ui(self):
-        layout = QVBoxLayout(self)
-        form_layout = QFormLayout()
+        main_layout = QVBoxLayout(self)
+
+        self.tabs = QTabWidget()
+        main_layout.addWidget(self.tabs)
+
+        # Вкладка 1: Основні дані
+        tab_main = QWidget()
+        form_layout = QFormLayout(tab_main)
 
         self.edit_name = QLineEdit()
         self.edit_address = QLineEdit()
@@ -997,15 +1066,48 @@ class PersonDialog(QDialog):
         form_layout.addRow("SMS сповіщення:", self.check_send_bd_sms)
         form_layout.addRow("Примітки:", self.edit_notes)
 
-        layout.addLayout(form_layout)
+        self.tabs.addTab(tab_main, "Основні дані")
+
+        # Вкладка 2: Події
+        tab_events = QWidget()
+        events_layout = QVBoxLayout(tab_events)
+
+        self.table_events = QTableWidget()
+        self.table_events.setColumnCount(4)
+        self.table_events.setHorizontalHeaderLabels(["ID", "Дата", "Тип події", "Опис"])
+        self.table_events.setColumnHidden(0, True)
+        self.table_events.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table_events.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table_events.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table_events.itemDoubleClicked.connect(self.edit_event)
+        events_layout.addWidget(self.table_events)
+
+        btn_events_layout = QHBoxLayout()
+        btn_add_event = QPushButton("Додати подію")
+        btn_edit_event = QPushButton("Редагувати подію")
+        btn_del_event = QPushButton("Видалити подію")
+
+        btn_add_event.clicked.connect(self.add_event)
+        btn_edit_event.clicked.connect(self.edit_event)
+        btn_del_event.clicked.connect(self.delete_event)
+
+        btn_events_layout.addWidget(btn_add_event)
+        btn_events_layout.addWidget(btn_edit_event)
+        btn_events_layout.addWidget(btn_del_event)
+        events_layout.addLayout(btn_events_layout)
+
+        self.tabs.addTab(tab_events, "Події")
 
         button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         button_box.accepted.connect(self.accept_data)
         button_box.rejected.connect(self.reject)
-        layout.addWidget(button_box)
+        main_layout.addWidget(button_box)
 
+        self.load_data_to_form()
+
+    def load_data_to_form(self):
         if self.person_data:
             self.edit_name.setText(self.person_data.get("name", "") or "")
             self.edit_address.setText(self.person_data.get("address", "") or "")
@@ -1017,11 +1119,17 @@ class PersonDialog(QDialog):
                         self.edit_dob.setDate(qdate)
                         self.has_dob = True
                     else:
-                        clear_dob()
+                        self.has_dob = False
+                        self.edit_dob.setDate(QDate(2000, 1, 1))
+                        self.edit_dob.setStyleSheet("color: gray;")
                 except Exception:
-                    clear_dob()
+                    self.has_dob = False
+                    self.edit_dob.setDate(QDate(2000, 1, 1))
+                    self.edit_dob.setStyleSheet("color: gray;")
             else:
-                clear_dob()
+                self.has_dob = False
+                self.edit_dob.setDate(QDate(2000, 1, 1))
+                self.edit_dob.setStyleSheet("color: gray;")
 
             self.edit_bapt.setText(str(self.person_data.get("Date_of_Bapt", "") or ""))
 
@@ -1047,7 +1155,80 @@ class PersonDialog(QDialog):
             self.check_send_bd_sms.setChecked(bool(self.person_data.get("send_bd_sms", 1)))
             self.edit_notes.setPlainText(self.person_data.get("notes", "") or "")
         else:
-            clear_dob()
+            self.has_dob = False
+            self.edit_dob.setDate(QDate(2000, 1, 1))
+            self.edit_dob.setStyleSheet("color: gray;")
+
+        # Завантаження подій
+        self.table_events.setRowCount(0)
+        if self.person_data and self.person_data.get("id") and self.db_path:
+            try:
+                with get_db_connection(self.db_path) as conn:
+                    cur = conn.cursor()
+                    cur.execute("""
+                        SELECT e.id, e.eventdate, e.eventtype, e.descr, t.list_name
+                        FROM p_events e
+                        LEFT JOIN list_event_type t ON e.eventtype = t.id
+                        WHERE e.people_id = ?
+                        ORDER BY e.eventdate DESC
+                    """, (self.person_data["id"],))
+                    for row in cur.fetchall():
+                        self._add_event_row({
+                            "id": row[0],
+                            "eventdate": row[1],
+                            "eventtype": row[2],
+                            "descr": row[3],
+                            "eventtype_name": row[4] or ""
+                        })
+            except Exception:
+                pass
+
+    def _add_event_row(self, ev):
+        r = self.table_events.rowCount()
+        self.table_events.insertRow(r)
+        self.table_events.setItem(r, 0, QTableWidgetItem(str(ev.get("id") or "")))
+        self.table_events.setItem(r, 1, QTableWidgetItem(str(ev.get("eventdate", ""))))
+
+        type_item = QTableWidgetItem(str(ev.get("eventtype_name", "") or ""))
+        type_item.setData(Qt.ItemDataRole.UserRole, ev.get("eventtype", 0))
+        self.table_events.setItem(r, 2, type_item)
+
+        self.table_events.setItem(r, 3, QTableWidgetItem(str(ev.get("descr", "") or "")))
+
+    def add_event(self):
+        dlg = EventDialog(self, self.db_path)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._add_event_row(dlg.get_data())
+
+    def edit_event(self):
+        row = self.table_events.currentRow()
+        if row < 0:
+            return
+
+        ev_id = self.table_events.item(row, 0).text()
+        ev_data = {
+            "id": int(ev_id) if ev_id else None,
+            "eventdate": self.table_events.item(row, 1).text(),
+            "eventtype": self.table_events.item(row, 2).data(Qt.ItemDataRole.UserRole),
+            "descr": self.table_events.item(row, 3).text()
+        }
+
+        dlg = EventDialog(self, self.db_path, ev_data)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            new_data = dlg.get_data()
+            self.table_events.item(row, 1).setText(new_data["eventdate"])
+            self.table_events.item(row, 2).setText(new_data["eventtype_name"])
+            self.table_events.item(row, 2).setData(Qt.ItemDataRole.UserRole, new_data["eventtype"])
+            self.table_events.item(row, 3).setText(new_data["descr"])
+
+    def delete_event(self):
+        row = self.table_events.currentRow()
+        if row < 0:
+            return
+        ev_id = self.table_events.item(row, 0).text()
+        if ev_id:
+            self.events_to_delete.append(int(ev_id))
+        self.table_events.removeRow(row)
 
     def accept_data(self):
         if not self.edit_name.text().strip():
@@ -1057,6 +1238,16 @@ class PersonDialog(QDialog):
 
     def get_data(self):
         dob_str = self.edit_dob.date().toString("yyyy-MM-dd") if self.has_dob else ""
+        events = []
+        for r in range(self.table_events.rowCount()):
+            ev_id = self.table_events.item(r, 0).text()
+            events.append({
+                "id": int(ev_id) if ev_id else None,
+                "eventdate": self.table_events.item(r, 1).text(),
+                "eventtype": self.table_events.item(r, 2).data(Qt.ItemDataRole.UserRole) or 0,
+                "descr": self.table_events.item(r, 3).text()
+            })
+
         return {
             "name": self.edit_name.text().strip(),
             "address": self.edit_address.text().strip(),
@@ -1072,7 +1263,9 @@ class PersonDialog(QDialog):
             "Date_of_Bapt": self.edit_bapt.text().strip(),
             "Mobile_Phone_a": self.edit_mobile_a.text().strip(),
             "email": self.edit_email.text().strip(),
-            "send_bd_sms": 1 if self.check_send_bd_sms.isChecked() else 0
+            "send_bd_sms": 1 if self.check_send_bd_sms.isChecked() else 0,
+            "events": events,
+            "events_to_delete": self.events_to_delete
         }
 
 
@@ -1089,22 +1282,15 @@ class ZeoGraceApp(QMainWindow):
             if saved_db and os.path.exists(saved_db):
                 self.db_path = saved_db
             else:
-                # Викликаємо діалог вибору: відкрити чи створити
                 self.prompt_startup_action()
 
-        # Якщо після prompt_startup_action шлях все ще None (користувач закрив вікна),
-        # використовуємо дефолтний шлях, щоб уникнути крашу програми
         if not self.db_path:
-             if getattr(sys, 'frozen', False):
-                 base_dir = os.path.dirname(sys.executable)
-             else:
-                 base_dir = os.path.dirname(os.path.abspath(__file__))
-             self.db_path = os.path.join(base_dir, "zeograce.db")
+            if getattr(sys, 'frozen', False):
+                base_dir = os.path.dirname(sys.executable)
+            else:
+                base_dir = os.path.dirname(os.path.abspath(__file__))
+            self.db_path = os.path.join(base_dir, "zeograce.db")
 
-        # ... (далі код ініціалізації: saved_person_id = ... і т.д.)
-
-        # ... (далі код ініціалізації)
-        
         saved_person_id = self.settings.value("last_selected_person_id", None)
         try:
             self.selected_person_id = int(saved_person_id) if saved_person_id is not None else None
@@ -1157,48 +1343,40 @@ class ZeoGraceApp(QMainWindow):
         msg_box.exec()
 
         if msg_box.clickedButton() == btn_open:
-            # Викликаємо метод, але адаптуємо його для виклику до побудови UI
             self._open_database_startup()
         elif msg_box.clickedButton() == btn_create:
             self.prompt_create_new_database()
-            
-            
+
     def _open_database_startup(self):
         """Допоміжний метод для відкриття БД до ініціалізації UI."""
         if getattr(sys, 'frozen', False):
             base_dir = os.path.dirname(sys.executable)
         else:
             base_dir = os.path.dirname(os.path.abspath(__file__))
-            
+
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Обрати файл бази даних SQLite",
             base_dir,
             "Бази даних SQLite (*.db *.sqlite *.sqlite3);;Всі файли (*.*)"
         )
-        
+
         if file_path:
             self.db_path = file_path
             self.settings.setValue("last_db_path", self.db_path)
-            
-            
+
     def prompt_create_new_database(self):
         """
         Пропонує користувачеві вибрати місце та ім'я для нової бази даних.
         Створює нову базу шляхом копіювання файлу-шаблону _blank.db.
         """
-        # Функція для знаходження шляху до вшитих файлів
         def get_resource_path(relative_path):
             if hasattr(sys, '_MEIPASS'):
-                # Шлях під час виконання зібраного .exe
                 return os.path.join(sys._MEIPASS, relative_path)
-            # Шлях під час розробки (запуск звичайного .py)
             return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path)
-            
-        # Отримуємо шлях до шаблону
+
         blank_db_path = get_resource_path("_blank.db")
 
-        # Визначаємо папку, де лежить сам .exe, щоб запропонувати зберегти нову базу поруч
         if getattr(sys, 'frozen', False):
             exe_dir = os.path.dirname(sys.executable)
         else:
@@ -1230,11 +1408,10 @@ class ZeoGraceApp(QMainWindow):
         if file_path:
             try:
                 shutil.copy2(blank_db_path, file_path)
-                
+
                 self.db_path = file_path
                 self.settings.setValue("last_db_path", self.db_path)
-                
-                # Якщо інтерфейс вже існує (виклик з меню)
+
                 if hasattr(self, 'photo_label'):
                     self.selected_person_id = None
                     self.current_photo_id = None
@@ -1242,13 +1419,12 @@ class ZeoGraceApp(QMainWindow):
                     self.photo_label.setText("Немає фото")
                     self.load_people()
                     self.update_window_title()
-                
+
                 QMessageBox.information(self, "Успіх", f"Нову базу успішно створено та відкрито:\n{self.db_path}")
-                
+
             except Exception as e:
                 QMessageBox.critical(self, "Помилка", f"Не вдалося створити базу даних:\n{str(e)}")
-            
-            
+
     # --- База даних і бекап ---
 
     def init_db(self, is_new=False):
@@ -1354,7 +1530,7 @@ class ZeoGraceApp(QMainWindow):
                 );
 
                 CREATE TABLE IF NOT EXISTS p_events (
-                    id        INTEGER PRIMARY KEY NOT NULL,
+                    id        INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
                     people_id INTEGER NOT NULL REFERENCES people (id) ON DELETE CASCADE,
                     eventdate DATE    DEFAULT ('1900-01-01'),
                     eventtype INTEGER DEFAULT (0),
@@ -1385,8 +1561,6 @@ class ZeoGraceApp(QMainWindow):
             """)
             conn.commit()
 
-                
-    
     def backup_database(self, max_backups=5):
         """Резервне копіювання БД."""
         if not os.path.exists(self.db_path):
@@ -1491,13 +1665,11 @@ class ZeoGraceApp(QMainWindow):
         act_open_db.setShortcut("Ctrl+O")
         act_open_db.triggered.connect(self.open_database)
         file_menu.addAction(act_open_db)
-        
+
         act_create_db = QAction("Створити &нову базу даних...", self)
-        # act_create_db.setShortcut("Ctrl+N") # За бажанням, можна призначити гарячу клавішу (Ctrl+N вже зайнято "Додати нового")
         act_create_db.triggered.connect(self.prompt_create_new_database)
         file_menu.addAction(act_create_db)
-        
-        
+
         act_backup = QAction("Створити &резервну копію", self)
         act_backup.triggered.connect(lambda: self.backup_database())
         file_menu.addAction(act_backup)
@@ -1897,8 +2069,16 @@ class ZeoGraceApp(QMainWindow):
                     data["children"], data["notes"], data["church_status"], data["Date_of_Bapt"],
                     data["Mobile_Phone_a"], data["email"], data["send_bd_sms"]
                 ))
-                conn.commit()
                 new_id = cur.lastrowid
+
+                # Збереження доданих подій
+                for ev in data.get("events", []):
+                    cur.execute("""
+                        INSERT INTO p_events (people_id, eventdate, eventtype, descr)
+                        VALUES (?, ?, ?, ?)
+                    """, (new_id, ev["eventdate"], ev["eventtype"], ev["descr"]))
+
+                conn.commit()
 
             self.selected_person_id = new_id
             self.load_people()
@@ -1936,6 +2116,25 @@ class ZeoGraceApp(QMainWindow):
                     data["children"], data["notes"], data["church_status"], data["Date_of_Bapt"],
                     data["Mobile_Phone_a"], data["email"], data["send_bd_sms"], self.selected_person_id
                 ))
+
+                # Видалення позначених подій
+                for ev_id in data.get("events_to_delete", []):
+                    cur.execute("DELETE FROM p_events WHERE id = ?", (ev_id,))
+
+                # Оновлення або вставка подій
+                for ev in data.get("events", []):
+                    if ev["id"]:
+                        cur.execute("""
+                            UPDATE p_events
+                            SET eventdate = ?, eventtype = ?, descr = ?
+                            WHERE id = ?
+                        """, (ev["eventdate"], ev["eventtype"], ev["descr"], ev["id"]))
+                    else:
+                        cur.execute("""
+                            INSERT INTO p_events (people_id, eventdate, eventtype, descr)
+                            VALUES (?, ?, ?, ?)
+                        """, (self.selected_person_id, ev["eventdate"], ev["eventtype"], ev["descr"]))
+
                 conn.commit()
 
             self.load_people()
@@ -2460,7 +2659,7 @@ class ZeoGraceApp(QMainWindow):
         if any(st.get(k) for k in ["church_status", "gender", "family_status", "group_status", "event_type"]):
             filter_slugs.append("Filtered")
 
-        filter_suffix = ("_" + "_".join(filter_slugs)) if filter_slugs else ""
+        filter_suffix = ("_" + "_".join(filter_slugs)) if filter_suffix else "" if False else ("_" + "_".join(filter_slugs)) if filter_slugs else ""
         clean_suffix = "".join(c for c in filter_suffix if c.isalnum() or c in ("_", "-"))
         default_file_name = f"{cur_date_str}_{db_base_name}_{layout_name_slug}{clean_suffix}.pdf"
 
