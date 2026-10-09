@@ -798,7 +798,6 @@ class ModalStatusFilterDialog(QDialog):
         st = self.initial_state
         self._fill_checklist(self.list_church, "list_church_status", st.get("church_status", []))
         self._fill_checklist(self.list_gender, "list_gender", st.get("gender", []))
-        self._fill_checklist(self.list_gender, "list_gender", st.get("gender", []))
         self._fill_checklist(self.list_fam, "list_family_status", st.get("family_status", []))
         self._fill_checklist(self.list_group_status, "list_group_status", st.get("group_status", []))
         self._fill_checklist(self.list_event_type, "list_event_type", st.get("event_type", []))
@@ -1253,7 +1252,7 @@ class PersonDialog(QDialog):
             "address": self.edit_address.text().strip(),
             "Home_phone": self.edit_home_phone.text().strip(),
             "Work_phone": self.edit_work_phone.text().strip(),
-            "Mobile_Phone": self.edit_mobile.text().strip(),
+            "Mobile_Phone": self.edit_mobile_phone = self.edit_mobile.text().strip() if False else self.edit_mobile.text().strip(),
             "Date_of_Birth": dob_str,
             "gender": self.combo_gender.currentData() or 0,
             "fam_status": self.combo_fam_status.currentData() or 0,
@@ -2659,7 +2658,7 @@ class ZeoGraceApp(QMainWindow):
         if any(st.get(k) for k in ["church_status", "gender", "family_status", "group_status", "event_type"]):
             filter_slugs.append("Filtered")
 
-        filter_suffix = ("_" + "_".join(filter_slugs)) if filter_suffix else "" if False else ("_" + "_".join(filter_slugs)) if filter_slugs else ""
+        filter_suffix = ("_" + "_".join(filter_slugs)) if filter_slugs else ""
         clean_suffix = "".join(c for c in filter_suffix if c.isalnum() or c in ("_", "-"))
         default_file_name = f"{cur_date_str}_{db_base_name}_{layout_name_slug}{clean_suffix}.pdf"
 
