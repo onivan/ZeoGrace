@@ -1081,16 +1081,30 @@ class ZeoGraceApp(QMainWindow):
         super().__init__()
         self.settings = QSettings("ZeoGrace", "ZeoGraceApp")
 
-        if db_path is None:
+        self.db_path = None
+        if db_path is not None:
+            self.db_path = db_path
+        else:
             saved_db = self.settings.value("last_db_path", type=str)
             if saved_db and os.path.exists(saved_db):
                 self.db_path = saved_db
             else:
-                base_dir = os.path.dirname(os.path.abspath(__file__))
-                self.db_path = os.path.join(base_dir, "zeograce.db")
-        else:
-            self.db_path = db_path
+                # Викликаємо діалог вибору: відкрити чи створити
+                self.prompt_startup_action()
 
+        # Якщо після prompt_startup_action шлях все ще None (користувач закрив вікна),
+        # використовуємо дефолтний шлях, щоб уникнути крашу програми
+        if not self.db_path:
+             if getattr(sys, 'frozen', False):
+                 base_dir = os.path.dirname(sys.executable)
+             else:
+                 base_dir = os.path.dirname(os.path.abspath(__file__))
+             self.db_path = os.path.join(base_dir, "zeograce.db")
+
+        # ... (далі код ініціалізації: saved_person_id = ... і т.д.)
+
+        # ... (далі код ініціалізації)
+        
         saved_person_id = self.settings.value("last_selected_person_id", None)
         try:
             self.selected_person_id = int(saved_person_id) if saved_person_id is not None else None
@@ -1126,9 +1140,118 @@ class ZeoGraceApp(QMainWindow):
         self.restore_ui_state()
         self.load_people()
 
+    def prompt_startup_action(self):
+        """
+        Запитує користувача при першому запуску (або якщо базу не знайдено),
+        чи він хоче відкрити існуючу базу, чи створити нову.
+        """
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("Базу даних не знайдено")
+        msg_box.setText("Попередню базу даних не знайдено або програма запускається вперше.\n\nЩо ви бажаєте зробити?")
+        msg_box.setIcon(QMessageBox.Icon.Question)
+
+        btn_open = msg_box.addButton("Відкрити існуючу", QMessageBox.ButtonRole.AcceptRole)
+        btn_create = msg_box.addButton("Створити нову", QMessageBox.ButtonRole.ActionRole)
+        btn_cancel = msg_box.addButton("Скасувати", QMessageBox.ButtonRole.RejectRole)
+
+        msg_box.exec()
+
+        if msg_box.clickedButton() == btn_open:
+            # Викликаємо метод, але адаптуємо його для виклику до побудови UI
+            self._open_database_startup()
+        elif msg_box.clickedButton() == btn_create:
+            self.prompt_create_new_database()
+            
+            
+    def _open_database_startup(self):
+        """Допоміжний метод для відкриття БД до ініціалізації UI."""
+        if getattr(sys, 'frozen', False):
+            base_dir = os.path.dirname(sys.executable)
+        else:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Обрати файл бази даних SQLite",
+            base_dir,
+            "Бази даних SQLite (*.db *.sqlite *.sqlite3);;Всі файли (*.*)"
+        )
+        
+        if file_path:
+            self.db_path = file_path
+            self.settings.setValue("last_db_path", self.db_path)
+            
+            
+    def prompt_create_new_database(self):
+        """
+        Пропонує користувачеві вибрати місце та ім'я для нової бази даних.
+        Створює нову базу шляхом копіювання файлу-шаблону _blank.db.
+        """
+        # Функція для знаходження шляху до вшитих файлів
+        def get_resource_path(relative_path):
+            if hasattr(sys, '_MEIPASS'):
+                # Шлях під час виконання зібраного .exe
+                return os.path.join(sys._MEIPASS, relative_path)
+            # Шлях під час розробки (запуск звичайного .py)
+            return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path)
+            
+        # Отримуємо шлях до шаблону
+        blank_db_path = get_resource_path("_blank.db")
+
+        # Визначаємо папку, де лежить сам .exe, щоб запропонувати зберегти нову базу поруч
+        if getattr(sys, 'frozen', False):
+            exe_dir = os.path.dirname(sys.executable)
+        else:
+            exe_dir = os.path.dirname(os.path.abspath(__file__))
+
+        if not os.path.exists(blank_db_path):
+            QMessageBox.critical(
+                self,
+                "Помилка",
+                f"Не знайдено файл-шаблон бази даних:\n{blank_db_path}\n\nНеможливо створити нову базу."
+            )
+            return
+
+        QMessageBox.information(
+            self,
+            "Створення бази",
+            "Зараз буде створено нову базу даних на основі шаблону. Будь ласка, вкажіть місце та назву для нового файлу."
+        )
+
+        default_path = os.path.join(exe_dir, "нова_база.db")
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Зберегти нову базу даних як...",
+            default_path,
+            "Бази даних SQLite (*.db *.sqlite *.sqlite3);;Всі файли (*.*)"
+        )
+
+        if file_path:
+            try:
+                shutil.copy2(blank_db_path, file_path)
+                
+                self.db_path = file_path
+                self.settings.setValue("last_db_path", self.db_path)
+                
+                # Якщо інтерфейс вже існує (виклик з меню)
+                if hasattr(self, 'photo_label'):
+                    self.selected_person_id = None
+                    self.current_photo_id = None
+                    self.photo_label.clear()
+                    self.photo_label.setText("Немає фото")
+                    self.load_people()
+                    self.update_window_title()
+                
+                QMessageBox.information(self, "Успіх", f"Нову базу успішно створено та відкрито:\n{self.db_path}")
+                
+            except Exception as e:
+                QMessageBox.critical(self, "Помилка", f"Не вдалося створити базу даних:\n{str(e)}")
+            
+            
     # --- База даних і бекап ---
 
-    def init_db(self):
+    def init_db(self, is_new=False):
         """Ініціалізація повної структури БД за schema2026-04-23v3.sql."""
         with get_db_connection(self.db_path) as conn:
             cur = conn.cursor()
@@ -1262,6 +1385,8 @@ class ZeoGraceApp(QMainWindow):
             """)
             conn.commit()
 
+                
+    
     def backup_database(self, max_backups=5):
         """Резервне копіювання БД."""
         if not os.path.exists(self.db_path):
@@ -1366,7 +1491,13 @@ class ZeoGraceApp(QMainWindow):
         act_open_db.setShortcut("Ctrl+O")
         act_open_db.triggered.connect(self.open_database)
         file_menu.addAction(act_open_db)
-
+        
+        act_create_db = QAction("Створити &нову базу даних...", self)
+        # act_create_db.setShortcut("Ctrl+N") # За бажанням, можна призначити гарячу клавішу (Ctrl+N вже зайнято "Додати нового")
+        act_create_db.triggered.connect(self.prompt_create_new_database)
+        file_menu.addAction(act_create_db)
+        
+        
         act_backup = QAction("Створити &резервну копію", self)
         act_backup.triggered.connect(lambda: self.backup_database())
         file_menu.addAction(act_backup)
