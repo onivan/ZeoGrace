@@ -4,6 +4,9 @@
 __pycache__/
 /_old/
 _refactored/
+assets/
+backups/
 build/
+data/
 dist/
 venv/
