@@ -8,30 +8,31 @@ from datetime import datetime
 from PIL import Image
 
 from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtCore import QTimer
+
 from PyQt6.QtGui import QPixmap, QAction
+from PyQt6.QtGui import QShortcut, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTableWidget, QTableWidgetItem, QPushButton, QLineEdit, QLabel,
     QFileDialog, QMessageBox, QHeaderView, QSplitter,
-    QFrame, QProgressDialog
+    QFrame, QProgressDialog, QDialog
 )
 
-from reportlab.lib.pagesizes import A4, A5
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-
-from config import ALL_COLUMNS, DEFAULT_VISIBLE_COLUMNS, PDF_STYLES, PDF_LAYOUTS
-from utils import ukrainian_sort_key, format_phone, register_unicode_font, get_proportional_image
-from database import get_db_connection
-from pdf_components import NumberedCanvas, PdfExportStyleDialog
-from dialogs import ColumnSelectionDialog, ModalStatusFilterDialog, EventDialog, PersonDialog
-
+from config import ALL_COLUMNS, DEFAULT_VISIBLE_COLUMNS
+from utils import ukrainian_sort_key, format_phone, register_unicode_font
+from database import get_db_connection, init_db, backup_database
+from pdf_components import PdfExportStyleDialog
+from pdf_generator import build_pdf_document
+from dialogs import ColumnSelectionDialog, ModalStatusFilterDialog, PersonDialog, ListEditorDialog, FamiliesWindow, SettingsDialog
 
 class ZeoGraceApp(QMainWindow):
     def __init__(self, db_path=None):
         super().__init__()
         self.settings = QSettings("ZeoGrace", "ZeoGraceApp")
 
+        self.person_edit_dialog = None
+        
         self.db_path = None
         if db_path is not None:
             self.db_path = db_path
@@ -78,17 +79,19 @@ class ZeoGraceApp(QMainWindow):
         self.current_photo_id = None
         self.pdf_font = register_unicode_font()
 
-        self.init_db()
-        self.backup_database()
+        self.backup_timer = QTimer(self)
+        self.backup_timer.timeout.connect(self.run_periodic_backup)
+        
+        init_db(self.db_path)
+        backup_database(self.db_path, prefix="startup")
+        
         self.init_ui()
         self.restore_ui_state()
+        self.apply_backup_timer_settings()  # Старт таймера згідно з налаштуваннями
         self.load_people()
+        
 
     def prompt_startup_action(self):
-        """
-        Запитує користувача при першому запуску (або якщо базу не знайдено),
-        чи він хоче відкрити існуючу базу, чи створити нову.
-        """
         msg_box = QMessageBox(self)
         msg_box.setWindowTitle("Базу даних не знайдено")
         msg_box.setText("Попередню базу даних не знайдено або програма запускається вперше.\n\nЩо ви бажаєте зробити?")
@@ -106,67 +109,39 @@ class ZeoGraceApp(QMainWindow):
             self.prompt_create_new_database()
 
     def _open_database_startup(self):
-        """Допоміжний метод для відкриття БД до ініціалізації UI."""
         if getattr(sys, 'frozen', False):
             base_dir = os.path.dirname(sys.executable)
         else:
             base_dir = os.path.dirname(os.path.abspath(__file__))
 
         file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Обрати файл бази даних SQLite",
-            base_dir,
-            "Бази даних SQLite (*.db *.sqlite *.sqlite3);;Всі файли (*.*)"
+            self, "Обрати файл бази даних SQLite", base_dir, "Бази даних SQLite (*.db *.sqlite *.sqlite3);;Всі файли (*.*)"
         )
-
         if file_path:
             self.db_path = file_path
             self.settings.setValue("last_db_path", self.db_path)
 
     def prompt_create_new_database(self):
-        """
-        Пропонує користувачеві вибрати місце та ім'я для нової бази даних.
-        Створює нову базу шляхом копіювання файлу-шаблону _blank.db.
-        """
         def get_resource_path(relative_path):
             if hasattr(sys, '_MEIPASS'):
                 return os.path.join(sys._MEIPASS, relative_path)
             return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path)
 
         blank_db_path = get_resource_path("_blank.db")
-
-        if getattr(sys, 'frozen', False):
-            exe_dir = os.path.dirname(sys.executable)
-        else:
-            exe_dir = os.path.dirname(os.path.abspath(__file__))
+        exe_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
 
         if not os.path.exists(blank_db_path):
-            QMessageBox.critical(
-                self,
-                "Помилка",
-                f"Не знайдено файл-шаблон бази даних:\n{blank_db_path}\n\nНеможливо створити нову базу."
-            )
+            QMessageBox.critical(self, "Помилка", f"Не знайдено файл-шаблон бази даних:\n{blank_db_path}\n\nНеможливо створити нову базу.")
             return
 
-        QMessageBox.information(
-            self,
-            "Створення бази",
-            "Зараз буде створено нову базу даних на основі шаблону. Будь ласка, вкажіть місце та назву для нового файлу."
-        )
+        QMessageBox.information(self, "Створення бази", "Зараз буде створено нову базу даних на основі шаблону. Будь ласка, вкажіть місце та назву для нового файлу.")
 
         default_path = os.path.join(exe_dir, "нова_база.db")
-
-        file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Зберегти нову базу даних як...",
-            default_path,
-            "Бази даних SQLite (*.db *.sqlite *.sqlite3);;Всі файли (*.*)"
-        )
+        file_path, _ = QFileDialog.getSaveFileName(self, "Зберегти нову базу даних як...", default_path, "Бази даних SQLite (*.db *.sqlite *.sqlite3);;Всі файли (*.*)")
 
         if file_path:
             try:
                 shutil.copy2(blank_db_path, file_path)
-
                 self.db_path = file_path
                 self.settings.setValue("last_db_path", self.db_path)
 
@@ -179,187 +154,20 @@ class ZeoGraceApp(QMainWindow):
                     self.update_window_title()
 
                 QMessageBox.information(self, "Успіх", f"Нову базу успішно створено та відкрито:\n{self.db_path}")
-
             except Exception as e:
                 QMessageBox.critical(self, "Помилка", f"Не вдалося створити базу даних:\n{str(e)}")
 
-    # --- База даних і бекап ---
-
-    def init_db(self, is_new=False):
-        """Ініціалізація повної структури БД за schema2026-04-23v3.sql."""
-        with get_db_connection(self.db_path) as conn:
-            cur = conn.cursor()
-            cur.executescript("""
-                PRAGMA foreign_keys = ON;
-
-                CREATE TABLE IF NOT EXISTS app_users (
-                    id            INTEGER       PRIMARY KEY AUTOINCREMENT,
-                    username      VARCHAR (50)  UNIQUE NOT NULL,
-                    password_hash VARCHAR (255) NOT NULL,
-                    role          VARCHAR (20)  DEFAULT 'editor',
-                    created_at    DATETIME      DEFAULT CURRENT_TIMESTAMP
-                );
-
-                CREATE TABLE IF NOT EXISTS disabled (
-                    id  INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-                    num TEXT
-                );
-
-                CREATE TABLE IF NOT EXISTS fsettings_columns_titles (
-                    id               INTEGER   PRIMARY KEY AUTOINCREMENT UNIQUE NOT NULL,
-                    table_name       CHAR (50) NOT NULL,
-                    column_name      TEXT      NOT NULL,
-                    column_title     TEXT,
-                    column_ods_width INTEGER   DEFAULT (20),
-                    column_export    BOOLEAN   DEFAULT false,
-                    list_items_blob  BLOB
-                );
-
-                CREATE TABLE IF NOT EXISTS fsettings_lists (
-                    id              INTEGER   PRIMARY KEY AUTOINCREMENT UNIQUE NOT NULL,
-                    list_name       CHAR (20) NOT NULL,
-                    list_items      TEXT,
-                    list_items_blob BLOB
-                );
-
-                CREATE TABLE IF NOT EXISTS groups (
-                    group_id      INTEGER    PRIMARY KEY AUTOINCREMENT NOT NULL UNIQUE,
-                    group_type    INTEGER    DEFAULT (0),
-                    group_address CHAR (100),
-                    group_notes   TEXT,
-                    group_name    CHAR (50)
-                );
-
-                CREATE TABLE IF NOT EXISTS list_church_status (
-                    id        INTEGER   PRIMARY KEY AUTOINCREMENT UNIQUE NOT NULL,
-                    list_name CHAR (50) NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS list_event_type (
-                    id                        INTEGER   PRIMARY KEY AUTOINCREMENT UNIQUE NOT NULL,
-                    list_name                 CHAR (50) NOT NULL,
-                    event_change_status_table CHAR (50),
-                    event_change_status_id    INTEGER
-                );
-
-                CREATE TABLE IF NOT EXISTS list_family_status (
-                    id        INTEGER   PRIMARY KEY AUTOINCREMENT UNIQUE NOT NULL,
-                    list_name CHAR (50) NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS list_gender (
-                    id        INTEGER   PRIMARY KEY AUTOINCREMENT UNIQUE NOT NULL,
-                    list_name CHAR (50) NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS list_group_status (
-                    id        INTEGER   PRIMARY KEY AUTOINCREMENT UNIQUE NOT NULL,
-                    list_name CHAR (50) NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS list_group_type (
-                    id        INTEGER   PRIMARY KEY AUTOINCREMENT UNIQUE NOT NULL,
-                    list_name CHAR (50) NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS month_names (
-                    id               INTEGER PRIMARY KEY NOT NULL,
-                    month_name_ukr   TEXT    DEFAULT (NULL),
-                    month_name_ukr_r TEXT    DEFAULT (NULL)
-                );
-
-                CREATE TABLE IF NOT EXISTS people (
-                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name           CHAR    DEFAULT (''),
-                    address        CHAR    DEFAULT (''),
-                    Home_phone     INTEGER DEFAULT (''),
-                    Work_phone     INTEGER DEFAULT (''),
-                    Mobile_Phone   INTEGER DEFAULT (''),
-                    Date_of_Birth  DATE    DEFAULT ('1900-01-01'),
-                    gender         INTEGER DEFAULT (0),
-                    fam_status     INTEGER DEFAULT (0),
-                    children       INTEGER DEFAULT (0),
-                    notes          TEXT    DEFAULT (''),
-                    church_status  INTEGER DEFAULT (0),
-                    Date_of_Bapt   DATE    DEFAULT (''),
-                    Mobile_Phone_a INTEGER DEFAULT (''),
-                    email          CHAR    NOT NULL DEFAULT (''),
-                    send_bd_sms    BOOLEAN DEFAULT (1)
-                );
-
-                CREATE TABLE IF NOT EXISTS p_events (
-                    id        INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-                    people_id INTEGER NOT NULL REFERENCES people (id) ON DELETE CASCADE,
-                    eventdate DATE    DEFAULT ('1900-01-01'),
-                    eventtype INTEGER DEFAULT (0),
-                    descr     CHAR
-                );
-
-                CREATE TABLE IF NOT EXISTS people_to_groups (
-                    id        INTEGER PRIMARY KEY AUTOINCREMENT UNIQUE NOT NULL,
-                    people_id INTEGER NOT NULL REFERENCES people (id) ON DELETE CASCADE,
-                    group_id  INTEGER NOT NULL REFERENCES groups (group_id) ON DELETE CASCADE,
-                    role      INTEGER DEFAULT (0)
-                );
-
-                CREATE TABLE IF NOT EXISTS photos (
-                    photo_id  INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-                    people_id INTEGER NOT NULL REFERENCES people (id) ON DELETE CASCADE,
-                    photo     BLOB,
-                    descr     CHAR
-                );
-
-                CREATE TABLE IF NOT EXISTS user_settings (
-                    user_id       INTEGER,
-                    setting_key   TEXT,
-                    setting_value TEXT,
-                    PRIMARY KEY (user_id, setting_key),
-                    FOREIGN KEY (user_id) REFERENCES app_users (id)
-                );
-            """)
-            conn.commit()
-
-    def backup_database(self, max_backups=5):
-        """Резервне копіювання БД."""
-        if not os.path.exists(self.db_path):
-            return
-
-        base_dir = os.path.dirname(os.path.abspath(self.db_path))
-        base_name, ext = os.path.splitext(os.path.basename(self.db_path))
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        backup_name = os.path.join(base_dir, f"{base_name}_{timestamp}{ext}")
-
-        try:
-            shutil.copy2(self.db_path, backup_name)
-        except OSError:
-            return
-
-        backups = sorted([
-            os.path.join(base_dir, f) for f in os.listdir(base_dir)
-            if f.startswith(f"{base_name}_") and f.endswith(ext)
-        ])
-        while len(backups) > max_backups:
-            oldest = backups.pop(0)
-            try:
-                os.remove(oldest)
-            except OSError:
-                pass
-
     def open_database(self):
-        """Відкриття іншого існуючого файлу БД SQLite."""
         file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Обрати файл бази даних SQLite",
-            os.path.dirname(os.path.abspath(self.db_path)),
-            "Бази даних SQLite (*.db *.sqlite *.sqlite3);;Всі файли (*.*)"
+            self, "Обрати файл бази даних SQLite", os.path.dirname(os.path.abspath(self.db_path)), "Бази даних SQLite (*.db *.sqlite *.sqlite3);;Всі файли (*.*)"
         )
         if not file_path:
             return
 
         self.db_path = file_path
         self.settings.setValue("last_db_path", self.db_path)
-        self.init_db()
-        self.backup_database()
+        init_db(self.db_path)
+        backup_database(self.db_path)
         self.selected_person_id = None
         self.current_photo_id = None
         self.photo_label.clear()
@@ -373,27 +181,90 @@ class ZeoGraceApp(QMainWindow):
         self.setWindowTitle(f"ZeoGrace (Python Edition) — [{base_name}]")
 
     def restore_ui_state(self):
-        """Відновлення геометрії вікна, розмірів спліттера та ширини колонок."""
         geom = self.settings.value("main_window_geometry")
         if geom:
             self.restoreGeometry(geom)
-
         splitter_state = self.settings.value("splitter_state")
         if splitter_state:
             self.splitter.restoreState(splitter_state)
-
         header_state = self.settings.value("table_header_state")
         if header_state:
             self.table.horizontalHeader().restoreState(header_state)
-
         vheader_state = self.settings.value("table_vheader_state")
         if vheader_state:
             self.table.verticalHeader().restoreState(vheader_state)
-
         self.apply_column_visibility()
 
+    def run_auto_detect_marriages(self):
+        """Запускає аналіз бази даних та відкриває вікно з переліком кандидатур і чекбоксами."""
+        from database import find_potential_marriages
+        from dialogs import MarriageConfirmationDialog
+
+        candidates = find_potential_marriages(self.db_path)
+        if not candidates:
+            QMessageBox.information(
+                self, "Інформація", "Потенційних шлюбних пар за вказаними критеріями не знайдено."
+            )
+            return
+
+        # Автоматичний бэкап перед масовим застосуванням
+        self.backup_before_batch_if_needed()
+    
+        dlg = MarriageConfirmationDialog(self, candidates=candidates, db_path=self.db_path)
+        dlg.exec()
+
+        if dlg.processed_count > 0:
+            self.load_people()
+            if self.person_edit_dialog and self.person_edit_dialog.isVisible():
+                self.person_edit_dialog.load_kinship_data()
+
+    def run_auto_detect_children(self):
+        """Запускає пошук дітей та відкриває діалогове вікно підтвердження змін."""
+        from database import find_potential_children
+        from dialogs import ChildrenConfirmationDialog
+
+        candidates = find_potential_children(self.db_path)
+        if not candidates:
+            QMessageBox.information(
+                self, "Інформація", "Потенційних дітей за вказаними критеріями не знайдено."
+            )
+            return
+
+        # Автоматичний бэкап перед масовим застосуванням
+        self.backup_before_batch_if_needed()
+    
+        dlg = ChildrenConfirmationDialog(self, candidates=candidates, db_path=self.db_path)
+        dlg.exec()
+
+        if dlg.processed_count > 0:
+            self.load_people()
+            if self.person_edit_dialog and self.person_edit_dialog.isVisible():
+                self.person_edit_dialog.load_kinship_data()
+    
+    def run_extended_kinship_search(self):
+        """Запускає аналіз розширених родинних зв'язків та відкриває вікно підтвердження."""
+        from database import find_extended_kinship_candidates
+        from dialogs import ExtendedKinshipConfirmationDialog
+
+        candidates = find_extended_kinship_candidates(self.db_path)
+        if not candidates:
+            QMessageBox.information(
+                self, "Інформація", "Потенційних розширених родинних зв'язків за вказаними критеріями не знайдено."
+            )
+            return
+
+        # Автоматичний бэкап перед масовим застосуванням
+        self.backup_before_batch_if_needed()
+    
+        dlg = ExtendedKinshipConfirmationDialog(self, candidates=candidates, db_path=self.db_path)
+        dlg.exec()
+
+        if dlg.processed_count > 0:
+            self.load_people()
+            if self.person_edit_dialog and self.person_edit_dialog.isVisible():
+                self.person_edit_dialog.load_kinship_data()
+    
     def closeEvent(self, event):
-        """Збереження налаштувань, геометрії, спліттера та таблиці при закритті додатку."""
         self.settings.setValue("last_db_path", self.db_path)
         if self.selected_person_id is not None:
             self.settings.setValue("last_selected_person_id", self.selected_person_id)
@@ -407,11 +278,18 @@ class ZeoGraceApp(QMainWindow):
         self.settings.setValue("last_pdf_export_layout", self.last_pdf_layout)
         self.settings.setValue("last_pdf_export_style", self.last_pdf_style)
         self.settings.setValue("last_pdf_phone_card_height", self.last_phone_card_height)
-
         super().closeEvent(event)
 
-    # --- Інтерфейс користувача ---
-
+    def open_families_window(self):
+        dlg = FamiliesWindow(self, db_path=self.db_path, pdf_font=self.pdf_font)
+        dlg.exec()
+        
+    def open_list_editor(self, table_name, title):
+        dlg = ListEditorDialog(self, db_path=self.db_path, table_name=table_name, window_title=title)
+        dlg.exec()
+        # Оновлюємо таблицю та списки після можливих змін класифікаторів
+        self.load_people()
+    
     def init_ui(self):
         self.update_window_title()
         self.resize(1150, 700)
@@ -429,7 +307,7 @@ class ZeoGraceApp(QMainWindow):
         file_menu.addAction(act_create_db)
 
         act_backup = QAction("Створити &резервну копію", self)
-        act_backup.triggered.connect(lambda: self.backup_database())
+        act_backup.triggered.connect(lambda: backup_database(self.db_path))
         file_menu.addAction(act_backup)
 
         file_menu.addSeparator()
@@ -441,11 +319,18 @@ class ZeoGraceApp(QMainWindow):
 
         file_menu.addSeparator()
 
+        act_settings = QAction("⚙️ &Налаштування...", self)
+        act_settings.triggered.connect(self.open_settings_dialog)
+        file_menu.addAction(act_settings)
+        
+        file_menu.addSeparator()
+
         act_exit = QAction("Ви&хід", self)
         act_exit.setShortcut("Ctrl+Q")
         act_exit.triggered.connect(self.close)
         file_menu.addAction(act_exit)
-
+        
+        
         person_menu = menu_bar.addMenu("&Парафіяни")
         act_add = QAction("&Додати нового...", self)
         act_add.setShortcut("Ctrl+N")
@@ -466,18 +351,75 @@ class ZeoGraceApp(QMainWindow):
         act_status_filter = QAction("Фільтр: &Статус...", self)
         act_status_filter.triggered.connect(self.open_status_filter)
         person_menu.addAction(act_status_filter)
+        
+        person_menu.addSeparator()
+        act_families = QAction("Перелік &родин та сімей...", self)
+        act_families.triggered.connect(self.open_families_window)
+        person_menu.addAction(act_families)
+        
 
         view_menu = menu_bar.addMenu("&Вигляд")
         act_columns = QAction("Налаштувати &колонки...", self)
         act_columns.triggered.connect(self.select_columns)
         view_menu.addAction(act_columns)
+        
+        # Меню "Довідники"
+        ref_menu = menu_bar.addMenu("&Довідники")
 
+        act_church_status = QAction("Церковний статус", self)
+        act_church_status.triggered.connect(lambda: self.open_list_editor("list_church_status", "Церковні статуси"))
+        ref_menu.addAction(act_church_status)
+
+        act_fam_status = QAction("Сімейний стан", self)
+        act_fam_status.triggered.connect(lambda: self.open_list_editor("list_family_status", "Сімейний стан"))
+        ref_menu.addAction(act_fam_status)
+
+        act_gender = QAction("Стать", self)
+        act_gender.triggered.connect(lambda: self.open_list_editor("list_gender", "Довідник статі"))
+        ref_menu.addAction(act_gender)
+
+        ref_menu.addSeparator()
+
+        act_event_type = QAction("Типи подій", self)
+        act_event_type.triggered.connect(lambda: self.open_list_editor("list_event_type", "Типи подій"))
+        ref_menu.addAction(act_event_type)
+
+        act_group_status = QAction("Ролі у групах", self)
+        act_group_status.triggered.connect(lambda: self.open_list_editor("list_group_status", "Ролі у групах"))
+        ref_menu.addAction(act_group_status)
+
+        act_group_type = QAction("Типи груп", self)
+        act_group_type.triggered.connect(lambda: self.open_list_editor("list_group_type", "Типи груп"))
+        ref_menu.addAction(act_group_type)
+        
+        act_kinship_type = QAction("Типи родинних зв'язків", self)
+        act_kinship_type.triggered.connect(lambda: self.open_list_editor("list_kinship_types", "Типи родинних зв'язків"))
+        ref_menu.addAction(act_kinship_type)
+        
+        
+        # Меню "Сервіс"
+        service_menu = menu_bar.addMenu("&Сервіс")
+
+        
+        act_detect_marriages = QAction("Автоматично встановити &шлюбні зв'язки", self)
+        act_detect_marriages.triggered.connect(self.run_auto_detect_marriages)
+        service_menu.addAction(act_detect_marriages)
+
+        act_detect_children = QAction("Автоматично встановити &зв'язки з дітьми", self)
+        act_detect_children.triggered.connect(self.run_auto_detect_children)
+        service_menu.addAction(act_detect_children)
+
+        act_detect_ext_kinship = QAction("Автоматично шукати &розширені родинні зв'язки", self)
+        act_detect_ext_kinship.triggered.connect(self.run_extended_kinship_search)
+        service_menu.addAction(act_detect_ext_kinship)
+        
+        # ========
+        
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         main_layout = QVBoxLayout(main_widget)
 
         top_bar = QHBoxLayout()
-
         btn_open_db = QPushButton("Відкрити БД")
         btn_open_db.clicked.connect(self.open_database)
         top_bar.addWidget(btn_open_db)
@@ -507,9 +449,7 @@ class ZeoGraceApp(QMainWindow):
 
         filter_box = QFrame()
         filter_box.setFrameShape(QFrame.Shape.StyledPanel)
-        filter_box.setStyleSheet(
-            "QFrame { background-color: #F8FAFC; border: 1px solid #CBD5E1; border-radius: 4px; }"
-        )
+        filter_box.setStyleSheet("QFrame { background-color: #F8FAFC; border: 1px solid #CBD5E1; border-radius: 4px; }")
         filter_box_layout = QHBoxLayout(filter_box)
         filter_box_layout.setContentsMargins(4, 3, 4, 3)
         filter_box_layout.setSpacing(8)
@@ -547,10 +487,8 @@ class ZeoGraceApp(QMainWindow):
         self.table = QTableWidget()
         self.table.setColumnCount(len(ALL_COLUMNS))
         self.table.setHorizontalHeaderLabels([col[1] for col in ALL_COLUMNS])
-
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.itemSelectionChanged.connect(self.on_person_selected)
@@ -586,7 +524,48 @@ class ZeoGraceApp(QMainWindow):
 
         self.status_label = QLabel("Готово")
         self.statusBar().addWidget(self.status_label)
+        
+        
 
+        # Створюємо гарячі клавіші з контекстом ApplicationShortcut
+        shortcut_up = QShortcut(QKeySequence("Ctrl+Up"), self)
+        shortcut_up.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        shortcut_up.activated.connect(self.select_prev_person)
+
+        shortcut_down = QShortcut(QKeySequence("Ctrl+Down"), self)
+        shortcut_down.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        shortcut_down.activated.connect(self.select_next_person)
+        
+        # Відкриття редагування при натисканні Enter або Return на вибраному рядку таблиці
+        shortcut_enter = QShortcut(QKeySequence(Qt.Key.Key_Return), self.table)
+        shortcut_enter.activated.connect(self.edit_person)
+
+        shortcut_enter_num = QShortcut(QKeySequence(Qt.Key.Key_Enter), self.table)
+        shortcut_enter_num.activated.connect(self.edit_person)
+        
+        # Встановлюємо фокус безпосередньо на таблицю
+        self.table.setFocus()
+        
+
+    def select_person_by_id(self, person_id: int):
+        """Шукає та виділяє запис у головній таблиці за його ID."""
+        for row in range(self.table.rowCount()):
+            item_id = self.table.item(row, 0)
+            if item_id and int(item_id.text()) == person_id:
+                self.table.selectRow(row)
+                self.table.scrollToItem(item_id, QTableWidget.ScrollHint.EnsureVisible)
+                break
+    
+    def select_prev_person(self):
+        curr_row = self.table.currentRow()
+        if curr_row > 0:
+            self.table.selectRow(curr_row - 1)
+
+    def select_next_person(self):
+        curr_row = self.table.currentRow()
+        if curr_row < self.table.rowCount() - 1:
+            self.table.selectRow(curr_row + 1)
+            
     def apply_column_visibility(self):
         for col_idx, (col_id, _) in enumerate(ALL_COLUMNS):
             is_visible = col_id in self.visible_columns
@@ -653,22 +632,14 @@ class ZeoGraceApp(QMainWindow):
         self.table.blockSignals(True)
         self.table.setRowCount(0)
 
-        gender_map = {}
-        fam_map = {}
-        church_map = {}
+        gender_map, fam_map, church_map = {}, {}, {}
         with get_db_connection(self.db_path) as conn:
             cur = conn.cursor()
             try:
                 cur.execute("SELECT id, list_name FROM list_gender")
                 gender_map = dict(cur.fetchall())
-            except Exception:
-                pass
-            try:
                 cur.execute("SELECT id, list_name FROM list_family_status")
                 fam_map = dict(cur.fetchall())
-            except Exception:
-                pass
-            try:
                 cur.execute("SELECT id, list_name FROM list_church_status")
                 church_map = dict(cur.fetchall())
             except Exception:
@@ -743,7 +714,6 @@ class ZeoGraceApp(QMainWindow):
             rows = cur.fetchall()
 
         rows.sort(key=lambda r: ukrainian_sort_key(r[1]))
-
         self.table.setRowCount(len(rows))
         target_row = None
 
@@ -790,15 +760,8 @@ class ZeoGraceApp(QMainWindow):
             st.get(k) for k in ["church_status", "gender", "family_status", "group_status", "group_id", "event_type"]
         ) or st.get("enable_dates")
 
-        if has_status_filters:
-            self.btn_filter_status.setStyleSheet("font-weight: bold; background-color: #DBEAFE; color: #1E40AF;")
-        else:
-            self.btn_filter_status.setStyleSheet("")
-
-        if self.bd_this_week_active:
-            self.btn_this_week.setStyleSheet("font-weight: bold; background-color: #FEF3C7; color: #92400E;")
-        else:
-            self.btn_this_week.setStyleSheet("")
+        self.btn_filter_status.setStyleSheet("font-weight: bold; background-color: #DBEAFE; color: #1E40AF;" if has_status_filters else "")
+        self.btn_this_week.setStyleSheet("font-weight: bold; background-color: #FEF3C7; color: #92400E;" if self.bd_this_week_active else "")
 
         if filter_descs:
             self.filter_info_label.setText("🔍 <b>Активні фільтри:</b> " + " | ".join(filter_descs))
@@ -819,8 +782,7 @@ class ZeoGraceApp(QMainWindow):
                         name, address, Home_phone, Work_phone, Mobile_Phone,
                         Date_of_Birth, gender, fam_status, children, notes,
                         church_status, Date_of_Bapt, Mobile_Phone_a, email, send_bd_sms
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     data["name"], data["address"], data["Home_phone"], data["Work_phone"],
                     data["Mobile_Phone"], data["Date_of_Birth"], data["gender"], data["fam_status"],
@@ -828,14 +790,11 @@ class ZeoGraceApp(QMainWindow):
                     data["Mobile_Phone_a"], data["email"], data["send_bd_sms"]
                 ))
                 new_id = cur.lastrowid
-
-                # Збереження доданих подій
                 for ev in data.get("events", []):
                     cur.execute("""
                         INSERT INTO p_events (people_id, eventdate, eventtype, descr)
                         VALUES (?, ?, ?, ?)
                     """, (new_id, ev["eventdate"], ev["eventtype"], ev["descr"]))
-
                 conn.commit()
 
             self.selected_person_id = new_id
@@ -856,46 +815,54 @@ class ZeoGraceApp(QMainWindow):
             return
 
         person_dict = dict(row)
-        dlg = PersonDialog(self, person_data=person_dict, db_path=self.db_path)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            data = dlg.get_data()
-            with get_db_connection(self.db_path) as conn:
-                cur = conn.cursor()
-                cur.execute("""
-                    UPDATE people
-                    SET name = ?, address = ?, Home_phone = ?, Work_phone = ?,
-                        Mobile_Phone = ?, Date_of_Birth = ?, gender = ?, fam_status = ?,
-                        children = ?, notes = ?, church_status = ?, Date_of_Bapt = ?,
-                        Mobile_Phone_a = ?, email = ?, send_bd_sms = ?
-                    WHERE id = ?
-                """, (
-                    data["name"], data["address"], data["Home_phone"], data["Work_phone"],
-                    data["Mobile_Phone"], data["Date_of_Birth"], data["gender"], data["fam_status"],
-                    data["children"], data["notes"], data["church_status"], data["Date_of_Bapt"],
-                    data["Mobile_Phone_a"], data["email"], data["send_bd_sms"], self.selected_person_id
-                ))
 
-                # Видалення позначених подій
-                for ev_id in data.get("events_to_delete", []):
-                    cur.execute("DELETE FROM p_events WHERE id = ?", (ev_id,))
+        # Якщо вікно вже відкрите — оновлюємо дані у ньому
+        if self.person_edit_dialog is not None and self.person_edit_dialog.isVisible():
+            self.person_edit_dialog.set_person_data(person_dict)
+            self.person_edit_dialog.raise_()
+            self.person_edit_dialog.activateWindow()
+            return
 
-                # Оновлення або вставка подій
-                for ev in data.get("events", []):
-                    if ev["id"]:
-                        cur.execute("""
-                            UPDATE p_events
-                            SET eventdate = ?, eventtype = ?, descr = ?
-                            WHERE id = ?
-                        """, (ev["eventdate"], ev["eventtype"], ev["descr"], ev["id"]))
-                    else:
-                        cur.execute("""
-                            INSERT INTO p_events (people_id, eventdate, eventtype, descr)
-                            VALUES (?, ?, ?, ?)
-                        """, (self.selected_person_id, ev["eventdate"], ev["eventtype"], ev["descr"]))
+        # Створюємо немодальне вікно
+        self.person_edit_dialog = PersonDialog(self, person_data=person_dict, db_path=self.db_path)
+        self.person_edit_dialog.setModal(False)
+        
+        def save_and_refresh():
+            data = self.person_edit_dialog.get_data()
+            person_id = self.person_edit_dialog.person_data.get("id") if self.person_edit_dialog.person_data else None
+            if person_id:
+                with get_db_connection(self.db_path) as conn:
+                    cur = conn.cursor()
+                    cur.execute("""
+                        UPDATE people
+                        SET name = ?, address = ?, Home_phone = ?, Work_phone = ?,
+                            Mobile_Phone = ?, Date_of_Birth = ?, gender = ?, fam_status = ?,
+                            children = ?, notes = ?, church_status = ?, Date_of_Bapt = ?,
+                            Mobile_Phone_a = ?, email = ?, send_bd_sms = ?
+                        WHERE id = ?
+                    """, (
+                        data["name"], data["address"], data["Home_phone"], data["Work_phone"],
+                        data["Mobile_Phone"], data["Date_of_Birth"], data["gender"], data["fam_status"],
+                        data["children"], data["notes"], data["church_status"], data["Date_of_Bapt"],
+                        data["Mobile_Phone_a"], data["email"], data["send_bd_sms"], person_id
+                    ))
 
-                conn.commit()
+                    for ev_id in data.get("events_to_delete", []):
+                        cur.execute("DELETE FROM p_events WHERE id = ?", (ev_id,))
 
-            self.load_people()
+                    for ev in data.get("events", []):
+                        if ev["id"]:
+                            cur.execute("UPDATE p_events SET eventdate = ?, eventtype = ?, descr = ? WHERE id = ?",
+                                        (ev["eventdate"], ev["eventtype"], ev["descr"], ev["id"]))
+                        else:
+                            cur.execute("INSERT INTO p_events (people_id, eventdate, eventtype, descr) VALUES (?, ?, ?, ?)",
+                                        (person_id, ev["eventdate"], ev["eventtype"], ev["descr"]))
+
+                    conn.commit()
+                self.load_people()
+
+        self.person_edit_dialog.accepted.connect(save_and_refresh)
+        self.person_edit_dialog.show()
 
     def delete_person(self):
         if not self.selected_person_id:
@@ -906,8 +873,7 @@ class ZeoGraceApp(QMainWindow):
         name = self.table.item(row, 1).text() if row >= 0 else ""
 
         reply = QMessageBox.question(
-            self,
-            "Підтвердження видалення",
+            self, "Підтвердження видалення",
             f"Ви дійсно бажаєте видалити запис '{name}' (ID: {self.selected_person_id})?\n"
             "Усі пов'язані фотографії та події також буде видалено.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -953,7 +919,15 @@ class ZeoGraceApp(QMainWindow):
         self.settings.setValue("last_selected_person_id", self.selected_person_id)
         self.display_photo(self.selected_person_id)
 
-    # --- Робота із зображеннями ---
+        # Якщо вікно редагування відкрите — підтягуємо обрану людину
+        if self.person_edit_dialog is not None and self.person_edit_dialog.isVisible():
+            with get_db_connection(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cur = conn.cursor()
+                cur.execute("SELECT * FROM people WHERE id = ?", (self.selected_person_id,))
+                row = cur.fetchone()
+                if row:
+                    self.person_edit_dialog.set_person_data(dict(row))
 
     def display_photo(self, people_id):
         with get_db_connection(self.db_path) as conn:
@@ -978,16 +952,13 @@ class ZeoGraceApp(QMainWindow):
             QMessageBox.warning(self, "Увага", "Оберіть запис зі списку!")
             return
 
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Оберіть фото", "", "Зображення (*.jpg *.jpeg *.png *.bmp)"
-        )
+        file_path, _ = QFileDialog.getOpenFileName(self, "Оберіть фото", "", "Зображення (*.jpg *.jpeg *.png *.bmp)")
         if not file_path:
             return
 
         try:
             img = Image.open(file_path).convert("RGB")
-            max_size = (600, 800)
-            img.thumbnail(max_size, Image.Resampling.LANCZOS)
+            img.thumbnail((600, 800), Image.Resampling.LANCZOS)
 
             buffer = io.BytesIO()
             img.save(buffer, format="JPEG", quality=85)
@@ -1032,9 +1003,7 @@ class ZeoGraceApp(QMainWindow):
             QMessageBox.information(self, "Інформація", "Фото відсутнє для збереження.")
             return
 
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "Зберегти фото", f"person_{self.selected_person_id}.jpg", "JPEG фото (*.jpg)"
-        )
+        file_path, _ = QFileDialog.getSaveFileName(self, "Зберегти фото", f"person_{self.selected_person_id}.jpg", "JPEG фото (*.jpg)")
         if not file_path:
             return
 
@@ -1044,8 +1013,6 @@ class ZeoGraceApp(QMainWindow):
             QMessageBox.information(self, "Успіх", f"Фото збережено у:\n{file_path}")
         except Exception as e:
             QMessageBox.critical(self, "Помилка", f"Не вдалося зберегти фото:\n{str(e)}")
-
-    # --- Генерація PDF ---
 
     def _get_records_for_export(self, limit=None):
         records = []
@@ -1082,7 +1049,6 @@ class ZeoGraceApp(QMainWindow):
 
                 phone_str = ", ".join(raw_phones) if raw_phones else "—"
                 nobr_phones = [ph.replace(" ", "&nbsp;").replace("-", "&#8209;") for ph in raw_phones]
-                compact_phones_str = ", ".join(nobr_phones) if nobr_phones else "—"
 
                 records.append({
                     "id": p_row[0],
@@ -1091,7 +1057,7 @@ class ZeoGraceApp(QMainWindow):
                     "dob": p_row[3] or "—",
                     "bapt": p_row[4] or "—",
                     "phones": phone_str,
-                    "compact_phones": compact_phones_str,
+                    "compact_phones": ", ".join(nobr_phones) if nobr_phones else "—",
                     "children": p_row[9] if p_row[9] is not None else 0,
                     "church_status": p_row[10] or "—",
                     "fam_status": p_row[11] or "—",
@@ -1100,281 +1066,37 @@ class ZeoGraceApp(QMainWindow):
                 })
         return records
 
-    def build_pdf_document(self, output_dest, layout_key, style_key, phone_card_height=150, records=None, first_page_only=False):
-        style_cfg = PDF_STYLES.get(style_key, PDF_STYLES["slate"])
+    # 2. Нові методи для керування резервуванням:
+    def apply_backup_timer_settings(self):
+        """Оновлює інтервал та стан таймера автобэкапу."""
+        auto_enabled = self.settings.value("auto_backup_enabled", True, type=bool)
+        interval_min = self.settings.value("auto_backup_interval", 15, type=int)
 
-        if records is None:
-            limit = 6 if layout_key == "a4_cards" else (3 if layout_key == "phone" else 20)
-            records = self._get_records_for_export(limit=limit if first_page_only else None)
-
-        total_records_count = len(records)
-        styles = getSampleStyleSheet()
-
-        # Фіксований формат А5 для варіанта "Для телефону", А4 для інших
-        if layout_key == "phone":
-            page_size = A5
-            left_margin = right_margin = 16
-            top_margin = 16
-            bottomMargin = 18
-            doc_width = page_size[0] - (left_margin + right_margin)
+        if auto_enabled and interval_min > 0:
+            interval_ms = interval_min * 60 * 1000
+            self.backup_timer.start(interval_ms)
         else:
-            page_size = A4
-            left_margin = right_margin = 25
-            top_margin = 25
-            bottomMargin = 25
-            doc_width = 545
+            self.backup_timer.stop()
 
-        doc = SimpleDocTemplate(
-            output_dest,
-            pagesize=page_size,
-            leftMargin=left_margin,
-            rightMargin=right_margin,
-            topMargin=top_margin,
-            bottomMargin=bottomMargin
-        )
+    def run_periodic_backup(self):
+        """Автоматичний бэкап за таймером."""
+        max_files = self.settings.value("max_backup_files", 20, type=int)
+        backup_database(self.db_path, prefix="auto", max_files=max_files)
+        self.statusBar().showMessage("Створено автокопію бази даних", 3000)
 
-        elements = []
+    def backup_before_batch_if_needed(self):
+        """Створює резервну копію безпосередньо перед пакетними операціями."""
+        if self.settings.value("backup_before_batch", True, type=bool):
+            max_files = self.settings.value("max_backup_files", 20, type=int)
+            backup_database(self.db_path, prefix="before_batch", max_files=max_files)
 
-        title_font_size = 14 if layout_key == "phone" else 15
-        title_style = ParagraphStyle(
-            name="ReportTitle",
-            parent=styles["Heading1"],
-            fontName=self.pdf_font,
-            fontSize=title_font_size,
-            leading=title_font_size + 3,
-            spaceAfter=5,
-            alignment=1,
-            textColor=style_cfg["title_color"]
-        )
-
-        filter_descs = self._get_filter_descriptions()
-        filter_parts = []
-        if filter_descs:
-            filter_parts.append("<b>Фільтри:</b> " + " | ".join(filter_descs))
-        filter_parts.append(f"<b>Всього записів:</b> {self.table.rowCount()}")
-        filter_full_text = " | ".join(filter_parts)
-
-        filter_style = ParagraphStyle(
-            name="ReportFilter",
-            parent=styles["Normal"],
-            fontName=self.pdf_font,
-            fontSize=6.8 if layout_key == "phone" else 7.5,
-            leading=9.5,
-            textColor=style_cfg["filter_text_color"]
-        )
-
-        elements.append(Paragraph("Звіт списку громади", title_style))
-        filter_table = Table([[Paragraph(filter_full_text, filter_style)]], colWidths=[doc_width])
-        filter_table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, -1), style_cfg["filter_box_bg"]),
-            ("BOX", (0, 0), (-1, -1), 0.5, style_cfg["filter_box_border"]),
-            ("TOPPADDING", (0, 0), (-1, -1), 2),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-            ("LEFTPADDING", (0, 0), (-1, -1), 4),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ]))
-        elements.append(filter_table)
-        elements.append(Spacer(1, 5))
-
-        # 1. Варіант "А4"
-        if layout_key == "a4_cards":
-            card_w = (doc_width - 8) / 2
-            card_photo_max_w = card_w * 0.38
-            card_photo_max_h = 165
-            info_w = card_w - card_photo_max_w - 8
-
-            text_style = ParagraphStyle(
-                name="CardTextA4",
-                parent=styles["Normal"],
-                fontName=self.pdf_font,
-                fontSize=7.2,
-                leading=9.2
-            )
-            title_card_style = ParagraphStyle(
-                name="CardTitleA4",
-                parent=styles["Normal"],
-                fontName=self.pdf_font,
-                fontSize=8.5,
-                leading=10.5,
-                textColor=style_cfg["title_color"]
-            )
-
-            cards = []
-            for idx, rec in enumerate(records, start=1):
-                img_widget = get_proportional_image(rec["photo_bytes"], card_photo_max_w, card_photo_max_h)
-
-                info_lines = [
-                    Paragraph(f"<b>#{idx}. {rec['name']}</b>", title_card_style),
-                    Paragraph(f"<b>Тел:</b> {rec['phones']}", text_style),
-                    Paragraph(f"<b>Адреса:</b> {rec['address']}", text_style),
-                    Paragraph(f"<b>ДН:</b> {rec['dob']} | <b>Хрещ:</b> {rec['bapt']}", text_style),
-                    Paragraph(f"<b>Статус:</b> {rec['church_status']}", text_style),
-                    Paragraph(f"<b>Сім'я:</b> {rec['fam_status']} (дітей: {rec['children']})", text_style),
-                ]
-                if rec["email"]:
-                    info_lines.append(Paragraph(f"<b>Email:</b> {rec['email']}", text_style))
-
-                card_table = Table([[img_widget, info_lines]], colWidths=[card_photo_max_w, info_w])
-                card_table.setStyle(TableStyle([
-                    ("BACKGROUND", (0, 0), (-1, -1), style_cfg["card_bg"]),
-                    ("BOX", (0, 0), (-1, -1), 0.5, style_cfg["card_border"]),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("ALIGN", (0, 0), (0, 0), "CENTER"),
-                    ("TOPPADDING", (0, 0), (-1, -1), 4),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-                ]))
-                cards.append(card_table)
-
-            grid_data = []
-            for i in range(0, len(cards), 2):
-                row_cells = [cards[i]]
-                if i + 1 < len(cards):
-                    row_cells.append(cards[i + 1])
-                else:
-                    row_cells.append("")
-                grid_data.append(row_cells)
-
-            if grid_data:
-                cards_grid = Table(grid_data, colWidths=[card_w, card_w])
-                cards_grid.setStyle(TableStyle([
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("TOPPADDING", (0, 0), (-1, -1), 3),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 2),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 2),
-                ]))
-                elements.append(cards_grid)
-
-        # 2. Варіант "Для телефону" (фіксований формат А5, ширина фото від висоти)
-        elif layout_key == "phone":
-            card_w = doc_width
-            card_photo_max_h = max(60, phone_card_height - 14)
-            card_photo_max_w = min(card_w * 0.48, card_photo_max_h * 0.78)
-            info_w = card_w - card_photo_max_w - 8
-
-            font_scale = max(0.85, min(1.30, phone_card_height / 150.0))
-            base_font_sz = 7.0 * font_scale
-            title_font_sz = 8.6 * font_scale
-
-            phone_text_style = ParagraphStyle(
-                name="CardPhoneText",
-                parent=styles["Normal"],
-                fontName=self.pdf_font,
-                fontSize=base_font_sz,
-                leading=base_font_sz * 1.25
-            )
-            phone_title_style = ParagraphStyle(
-                name="CardPhoneTitle",
-                parent=styles["Normal"],
-                fontName=self.pdf_font,
-                fontSize=title_font_sz,
-                leading=title_font_sz * 1.22,
-                textColor=style_cfg["title_color"]
-            )
-
-            for idx, rec in enumerate(records, start=1):
-                img_widget = get_proportional_image(rec["photo_bytes"], card_photo_max_w, card_photo_max_h)
-
-                info_lines = [
-                    Paragraph(f"<b>#{idx}. {rec['name']}</b>", phone_title_style),
-                    Paragraph(f"<b>Тел:</b> {rec['phones']}", phone_text_style),
-                    Paragraph(f"<b>Адреса:</b> {rec['address']}", phone_text_style),
-                    Paragraph(f"<b>ДН:</b> {rec['dob']} | <b>Хрещ:</b> {rec['bapt']}", phone_text_style),
-                    Paragraph(f"<b>Статус:</b> {rec['church_status']} | <b>Сім:</b> {rec['fam_status']}", phone_text_style),
-                    Paragraph(f"<b>Дітей:</b> {rec['children']}", phone_text_style),
-                ]
-                if rec["email"]:
-                    info_lines.append(Paragraph(f"<b>Email:</b> {rec['email']}", phone_text_style))
-
-                card_table = Table([[img_widget, info_lines]], colWidths=[card_photo_max_w, info_w])
-                card_table.setStyle(TableStyle([
-                    ("BACKGROUND", (0, 0), (-1, -1), style_cfg["card_bg"]),
-                    ("BOX", (0, 0), (-1, -1), 0.5, style_cfg["card_border"]),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("ALIGN", (0, 0), (0, 0), "CENTER"),
-                    ("TOPPADDING", (0, 0), (-1, -1), 4),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-                ]))
-
-                elements.append(card_table)
-                elements.append(Spacer(1, 4))
-
-                if idx % 3 == 0 and idx < len(records):
-                    elements.append(PageBreak())
-
-        # 3. Варіант "Компактний"
-        else:
-            compact_header_style = ParagraphStyle(
-                name="CompactHeader",
-                parent=styles["Normal"],
-                fontName=self.pdf_font,
-                fontSize=7.5,
-                leading=9.5,
-                textColor=style_cfg["header_text"]
-            )
-            compact_cell_style = ParagraphStyle(
-                name="CompactCell",
-                parent=styles["Normal"],
-                fontName=self.pdf_font,
-                fontSize=7.0,
-                leading=8.8
-            )
-
-            col_widths = [18, 125, 110, 105, 62, 125]
-            headers = [
-                Paragraph("<b>№</b>", compact_header_style),
-                Paragraph("<b>П.І.Б.</b>", compact_header_style),
-                Paragraph("<b>Адреса</b>", compact_header_style),
-                Paragraph("<b>Номери телефонів</b>", compact_header_style),
-                Paragraph("<b>ДН / Хрещення</b>", compact_header_style),
-                Paragraph("<b>Додаткові дані (статуси, діти)</b>", compact_header_style)
-            ]
-            table_data = [headers]
-
-            for idx, rec in enumerate(records, start=1):
-                dob_bapt_text = f"{rec['dob']}<br/>{rec['bapt']}" if rec['bapt'] != "—" else rec['dob']
-
-                extras = []
-                if rec['church_status'] != "—":
-                    extras.append(f"Церк: {rec['church_status']}")
-                if rec['fam_status'] != "—":
-                    extras.append(f"Сім'я: {rec['fam_status']}")
-                if rec['children']:
-                    extras.append(f"Дітей: {rec['children']}")
-                if rec['email']:
-                    extras.append(f"{rec['email']}")
-                extras_text = " | ".join(extras) if extras else "—"
-
-                table_data.append([
-                    Paragraph(str(idx), compact_cell_style),
-                    Paragraph(f"<b>{rec['name']}</b>", compact_cell_style),
-                    Paragraph(rec['address'], compact_cell_style),
-                    Paragraph(rec['compact_phones'], compact_cell_style),
-                    Paragraph(dob_bapt_text, compact_cell_style),
-                    Paragraph(extras_text, compact_cell_style),
-                ])
-
-            compact_table = Table(table_data, colWidths=col_widths, repeatRows=1)
-            compact_table.setStyle(TableStyle([
-                ("BACKGROUND", (0, 0), (-1, 0), style_cfg["header_bg"]),
-                ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-                ("TOPPADDING", (0, 0), (-1, -1), 3),
-                ("GRID", (0, 0), (-1, -1), 0.5, style_cfg["grid_color"]),
-                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [style_cfg["row_bg1"], style_cfg["row_bg2"]]),
-            ]))
-            elements.append(compact_table)
-
-        def canvas_factory(*args, **kwargs):
-            return NumberedCanvas(*args, font_name=self.pdf_font, **kwargs)
-
-        doc.build(elements, canvasmaker=canvas_factory)
-
+    def open_settings_dialog(self):
+        """Відкриває вікно налаштувань програми."""
+        dlg = SettingsDialog(self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.apply_backup_timer_settings()
+            QMessageBox.information(self, "Успіх", "Налаштування збережено.")
+    
     def export_to_pdf(self):
         style_dlg = PdfExportStyleDialog(
             self,
@@ -1400,11 +1122,7 @@ class ZeoGraceApp(QMainWindow):
 
         cur_date_str = datetime.now().strftime("%Y-%m-%d")
         db_base_name = os.path.splitext(os.path.basename(self.db_path))[0]
-        layout_name_slug = {
-            "a4_cards": "A4",
-            "phone": "Phone_A5",
-            "compact": "Compact"
-        }.get(chosen_layout_key, "Report")
+        layout_name_slug = {"a4_cards": "A4", "phone": "Phone_A5", "compact": "Compact"}.get(chosen_layout_key, "Report")
 
         filter_slugs = []
         st = self.status_filter_state
@@ -1424,12 +1142,7 @@ class ZeoGraceApp(QMainWindow):
         last_dir = self.settings.value("last_pdf_export_dir", os.path.dirname(os.path.abspath(self.db_path)), type=str)
         default_save_path = os.path.join(last_dir, default_file_name)
 
-        save_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Зберегти PDF-звіт",
-            default_save_path,
-            "PDF файли (*.pdf)"
-        )
+        save_path, _ = QFileDialog.getSaveFileName(self, "Зберегти PDF-звіт", default_save_path, "PDF файли (*.pdf)")
         if not save_path:
             return
 
@@ -1446,13 +1159,21 @@ class ZeoGraceApp(QMainWindow):
             progress.setValue(50)
             QApplication.processEvents()
 
-            self.build_pdf_document(
+            filter_descs = self._get_filter_descriptions()
+            filter_parts = []
+            if filter_descs:
+                filter_parts.append("<b>Фільтри:</b> " + " | ".join(filter_descs))
+            filter_parts.append(f"<b>Всього записів:</b> {len(records)}")
+            filter_text = " | ".join(filter_parts)
+
+            build_pdf_document(
                 save_path,
                 layout_key=chosen_layout_key,
                 style_key=chosen_style_key,
-                phone_card_height=phone_card_height,
                 records=records,
-                first_page_only=False
+                filter_text=filter_text,
+                font_name=self.pdf_font,
+                phone_card_height=phone_card_height
             )
             progress.setValue(100)
             self.statusBar().showMessage(f"PDF-звіт успішно збережено: {os.path.basename(save_path)}", 8000)
