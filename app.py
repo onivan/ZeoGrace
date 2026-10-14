@@ -331,7 +331,7 @@ class ZeoGraceApp(QMainWindow):
         file_menu.addAction(act_exit)
         
         
-        person_menu = menu_bar.addMenu("&Парафіяни")
+        person_menu = menu_bar.addMenu("&Громада")
         act_add = QAction("&Додати нового...", self)
         act_add.setShortcut("Ctrl+N")
         act_add.triggered.connect(self.add_person)

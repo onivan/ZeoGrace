@@ -1,1 +1,9 @@
 .aider*
+.comments
+.git
+__pycache__/
+/_old/
+_refactored/
+build/
+dist/
+venv/
